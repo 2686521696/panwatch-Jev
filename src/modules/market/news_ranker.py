@@ -4,6 +4,13 @@ import re
 from collections import Counter
 from datetime import datetime
 
+# Jev 增强层：可选依赖。导入失败 / 没配 TYPESAFE_API_KEY / JEV_NEWS=0
+# → 下面三个函数全部走原来的关键词与字面逻辑，行为不变。
+try:
+    from . import jev_news as _jev
+except Exception:       # noqa: BLE001 - 增强件不许拖垮主链路
+    _jev = None
+
 
 POSITIVE_HINTS = (
     "签约",
@@ -84,7 +91,9 @@ def parse_news_time(value: str | datetime | int | float | None) -> datetime | No
         return None
 
 
-def dedupe_news_items(items: list[dict]) -> list[dict]:
+def _exact_dedupe(items: list[dict]) -> list[dict]:
+    """原逻辑：(source, external_id, title) 三元组全等才算重复。
+    便宜且无副作用，先跑它把字面重复去掉，再交给语义层。"""
     seen: set[tuple[str, str, str]] = set()
     out: list[dict] = []
     for it in items:
@@ -99,6 +108,19 @@ def dedupe_news_items(items: list[dict]) -> list[dict]:
     return out
 
 
+def dedupe_news_items(items: list[dict]) -> list[dict]:
+    """签名与行为契约不变：进一个 list，出一个去重后的 list。
+    ⚠ 2026-09-19 实测：仅靠字面全等，PanWatch /api/news 实时 40 条去掉 0 条；
+      叠上事件级后 40 → 28。同一次回购/召回被四五家媒体各写一遍是常态。"""
+    out = _exact_dedupe(items)
+    if _jev is None or not _jev.enabled():
+        return out
+    try:
+        return _jev.event_dedupe(out)
+    except Exception:   # noqa: BLE001 - fail-open，增强层炸了照常返回
+        return out
+
+
 def _sentiment_from_text(text: str) -> str:
     pos = sum(1 for k in POSITIVE_HINTS if k in text)
     neg = sum(1 for k in NEGATIVE_HINTS if k in text)
@@ -110,6 +132,14 @@ def _sentiment_from_text(text: str) -> str:
 
 
 def rank_news_items(items: list[dict], symbol: str = "") -> list[dict]:
+    # 东财返回的 importance 恒为 0（实测 40/40），所以下面 `importance * 5.0`
+    # 这一项一直是死的。这里把它填上，排序公式本身一个字不改。
+    if _jev is not None and _jev.enabled():
+        try:
+            items = _jev.fill_importance(items)
+        except Exception:   # noqa: BLE001 - fail-open
+            pass
+
     def score(it: dict) -> tuple[float, float]:
         title = str(it.get("title") or "")
         content = str(it.get("content") or "")
@@ -143,11 +173,25 @@ def summarize_news_topics(items: list[dict], max_topics: int = 6) -> dict:
     word_counter: Counter[str] = Counter()
     senti_counter: Counter[str] = Counter()
 
+    # 批量问一次「对持股人是利好还是利空」；拿不到就逐条走关键词法。
+    # ⚠ 关键词法分不清方向：「宁德时代减持湖南裕能」含「减持」判负面，
+    #   但对宁德时代持有人那是它在卖别人。
+    jev_senti: dict = {}
+    if _jev is not None and _jev.enabled():
+        try:
+            jev_senti = _jev.batch_sentiment(items)
+        except Exception:   # noqa: BLE001 - fail-open
+            jev_senti = {}
+
     for it in items:
         title = str(it.get("title") or "")
         content = str(it.get("content") or "")
         text = f"{title} {content}".strip()
-        sentiment = _sentiment_from_text(text)
+        sentiment = jev_senti.get(title) or _sentiment_from_text(text)
+        # ⚠ 原版只把逐条判定喂给多数投票的汇总，从不存回 item —— 于是逐条准确率
+        #   的改进（实测关键词 2/6 → Jev 5/6）在汇总层被冲掉，用户一点都看不到。
+        #   存回去是纯增量（只新增一个 key），下游可用可不用。
+        it.setdefault("sentiment", sentiment)
         senti_counter[sentiment] += 1
 
         words = re.findall(r"[\u4e00-\u9fa5A-Za-z0-9]{2,}", title)

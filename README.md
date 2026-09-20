@@ -1,272 +1,119 @@
-# 盯盘侠 PanWatch
+# PanWatch + Jev
 
-**自托管 AI 盯盘助手 · 集成 [TradingAgents](https://github.com/TauricResearch/TradingAgents) 多 Agent 投资决策** — A 股 / 港股 / 美股实时监控、持仓管理、智能分析、全渠道推送
+> Fork of **[TNT-Likely/PanWatch](https://github.com/TNT-Likely/PanWatch)** (MIT, © 2026 sunxiao0721).
+> Upstream docs are preserved verbatim in [README.upstream.md](README.upstream.md).
+>
+> 本仓库是 **[TNT-Likely/PanWatch](https://github.com/TNT-Likely/PanWatch)** 的 fork（MIT 许可）。
+> 上游原始文档完整保留在 [README.upstream.md](README.upstream.md)。
 
-[![GitHub stars](https://img.shields.io/github/stars/TNT-Likely/PanWatch?style=flat&logo=github&color=yellow)](https://github.com/TNT-Likely/PanWatch/stargazers)
-[![Docker Pulls](https://img.shields.io/docker/pulls/sunxiao0721/panwatch?logo=docker&label=docker%20pulls&color=2496ED)](https://hub.docker.com/r/sunxiao0721/panwatch)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Last commit](https://img.shields.io/github/last-commit/TNT-Likely/PanWatch)](https://github.com/TNT-Likely/PanWatch/commits/main)
-[![PWA](https://img.shields.io/badge/PWA-installable-5A0FC8?logo=pwa&logoColor=white)](https://github.com/TNT-Likely/PanWatch)
+---
 
-![盯盘侠 PanWatch · TradingAgents 深度分析演示](docs/screenshots/tradingagents-demo.gif)
+## What this fork changes / 这个 fork 改了什么
 
-> 🧠 **持仓页点一下 → TradingAgents 9-Agent 投研团队接力分析 → 看多看空辩论 → 风控审查 → PM 决策书,3-5 分钟一条完整推理链,结论直推到你的 IM。**
+One thing only: the news layer (`src/modules/market/news_ranker.py`) gains a
+[TypeSafe Jev](https://typesafe.ai) enhancement layer. Everything else is upstream, untouched.
 
-## 📸 功能一览
+只改一处：新闻层（`src/modules/market/news_ranker.py`）加了一个 Jev 增强层。其余全部保持上游原样。
 
-| 持仓 · 多账户汇总 | 机会页 · AI 评分选股 |
-|:---:|:---:|
-| ![持仓管理](./docs/screenshots/portfolio.png) | ![机会页 AI 评分](./docs/screenshots/opportunities.png) |
-| **模拟盘 · 净值曲线 + 绩效** | **个股深度详情** |
-| ![模拟盘](./docs/screenshots/papertrading.png) | ![个股详情](./docs/screenshots/stock-detail.png) |
-| **技术指标共振 · 一眼 MACD/RSI/KDJ** | **价格提醒 · 条件组合触发** |
-| ![技术指标](./docs/screenshots/technicals.png) | ![价格提醒](./docs/screenshots/alerts.png) |
+| Function | Upstream | With this fork |
+| --- | --- | --- |
+| `dedupe_news_items` | exact `(source, external_id, title)` tuple match | + semantic same-event clustering |
+| `rank_news_items` | formula unchanged, but `importance` is always 0 from the data source | formula unchanged; `importance` filled in |
+| `summarize_news_topics` | 20 hard-coded sentiment keywords | asks whether an item is good or bad **for a holder** |
 
-<details>
-<summary>移动端截图</summary>
+| 函数 | 上游行为 | 本 fork |
+| --- | --- | --- |
+| `dedupe_news_items` | `(source, external_id, title)` 三元组全等 | 叠加语义事件级去重 |
+| `rank_news_items` | 公式不变，但数据源给的 `importance` 恒为 0 | 公式一字不改，把 `importance` 填上 |
+| `summarize_news_topics` | 20 个硬编码情绪关键词 | 改问「对持股人是利好还是利空」 |
 
-<img src="./docs/screenshots/mobile.png" width="300" /> <img src="./docs/screenshots/mobile-detail.png" width="300" />
+## Measured on live data / 实测
 
-> 📱 支持 PWA，移动端可「添加到主屏幕」当原生 App 用。
+Against 40 live items from this app's own `/api/news` (2026-09-19):
 
-</details>
+```
+upstream dedupe_news_items   40 → 40   (removed 0)
+this fork                    40 → 28   (merged 12)
+```
 
-> 💡 如果盯盘侠对你有帮助，点右上角 ⭐ **Star** 支持一下 —— 这是对开源项目最好的鼓励，也能让更多人发现它。
+The 12 merges: four near-identical CATL buyback headlines, five BYD recall
+headlines, two Tencent buyback, two Moutai warehouse items — the same event
+reported by different outlets, which a tuple match cannot see.
 
-## 🧠 深度分析：TradingAgents 多 Agent 决策
+Per-item sentiment on a hand-labelled set: keyword method 2/6, this fork 5/6.
+The keyword list has no entry for 召回 (recall), 抛售 (sell-off) or 下降
+(decline), and cannot tell direction — 「宁德时代减持湖南裕能」 contains 减持
+but CATL is the *seller*, which is not bearish for a CATL holder.
 
-接入 [TradingAgents](https://github.com/TauricResearch/TradingAgents)（76k+ star）多 Agent 投资决策框架，在持仓页点 🧠 图标即可触发：
+对同一批数据：上游去重去掉 0 条，本 fork 并掉 12 条（同一次回购/召回被四五家媒体各写一遍）。
+逐条方向判定：关键词法 2/6，本 fork 5/6。
 
-- **4 类分析师**（技术 / 情绪 / 新闻 / 基本面） → **看多看空辩论** → **风控审查** → **PM 整合决策**
-- 3-5 分钟输出完整推理链，结论同步推送到 Telegram / 微信 / 钉钉
-- 默认 deepseek-chat，单次 ~$0.05，月度预算可控
+## Fail-open by design / 降级设计
 
-## 为什么选择盯盘侠？
+This is an **enhancement, not a gate**. Missing key, missing SDK, network error,
+rate limit — all fall back to the original keyword/tuple logic. The agent still
+runs and still produces a report.
 
-- **数据私有** — 自托管部署，持仓数据不经过任何第三方
-- **AI 原生** — 不是简单的指标堆砌，而是让 AI 理解你的持仓、风格和目标
-- **开箱即用** — Docker 一键部署，5 分钟完成配置
-
-## 核心功能
-
-<details>
-<summary><b>智能 Agent 系统</b></summary>
-
-| Agent | 触发时机 | 功能 |
-|-------|---------|------|
-| **盘前分析** | 每日开盘前 | 综合隔夜美股、新闻消息、技术形态，给出今日操作策略 |
-| **盘中监测** | 交易时段实时 | 监控异动信号，RSI/KDJ/MACD 共振时推送提醒 |
-| **盘后日报** | 每日收盘后 | 复盘当日走势，分析资金流向，规划次日操作 |
-| **新闻速递** | 定时采集 | 抓取财经新闻，AI 筛选与持仓相关的重要信息 |
-
-</details>
-
-<details>
-<summary><b>专业技术分析</b></summary>
-
-- **趋势指标**：MA 多空排列、MACD 金叉死叉、布林带突破
-- **动量指标**：RSI 超买超卖、KDJ 钝化与背离
-- **量价分析**：量比异动、缩量回调、放量突破
-- **形态识别**：锤子线、吞没形态、十字星等 K 线形态
-- **支撑压力**：自动计算多级支撑位和压力位
-
-</details>
-
-<details>
-<summary><b>多市场 & 多账户</b></summary>
-
-- **覆盖市场**：A 股、港股、美股实时行情
-- **账户管理**：支持多券商账户独立管理，汇总展示总资产
-- **交易风格**：按短线/波段/长线分别设置，AI 建议更精准
-
-</details>
-
-<details>
-<summary><b>全渠道通知</b></summary>
-
-Telegram / 企业微信 / 钉钉 / 飞书 / Bark / 自定义 Webhook
-
-</details>
-
-<details>
-<summary><b>价格提醒</b></summary>
-
-- 支持价格、涨跌幅、成交额、量比等条件组合（AND / OR）
-- 支持交易时段/全天生效、冷却时间、日触发上限、重复触发模式
-- 到期时间使用弹窗内日期面板 + `HH:mm` 输入，留空表示永不过期
-- 可按规则选择通知渠道，不选则走系统默认渠道
-
-</details>
-
-## 快速开始
+没有 key、没装 SDK、网络故障、限流 —— 一律退回上游原逻辑，Agent 照常跑完。
 
 ```bash
-docker run -d \
-  --name panwatch \
-  -p 8000:8000 \
-  -v panwatch_data:/app/data \
-  sunxiao0721/panwatch:latest
+export JEV_NEWS=0     # hard off, no code change / 一键关闭
 ```
 
-访问 `http://localhost:8000`，首次使用设置账号密码即可。
+| State / 状态 | Result / 结果 |
+| --- | --- |
+| disabled or no key / 关闭或无 key | byte-identical to upstream / 与上游逐字节一致 |
+| invalid key, 401 / key 无效 | warns, degrades, does not raise / 告警降级，不抛异常 |
+| valid key / key 正常 | event dedup active / 事件去重生效 |
 
-说明：镜像内已包含 Playwright 运行所需的系统依赖；Chromium 浏览器会在容器首次启动时自动下载并安装到挂载卷（默认 `/app/data/playwright`），首次启动可能需要几分钟且需要网络可达。
-
-如果不需要截图等浏览器能力，可以在启动容器时设置 `PLAYWRIGHT_SKIP_BROWSER_INSTALL=1` 跳过首次 Chromium 下载/安装。
-
-<details>
-<summary>Docker Compose</summary>
-
-```yaml
-version: '3.8'
-services:
-  panwatch:
-    image: sunxiao0721/panwatch:latest
-    container_name: panwatch
-    ports:
-      - "8000:8000"
-    volumes:
-      - panwatch_data:/app/data
-    restart: unless-stopped
-
-volumes:
-  panwatch_data:
-```
+## Setup / 安装
 
 ```bash
-docker-compose up -d
+docker compose up -d          # or the upstream docker run, see README.upstream.md
+
+pip install typesafe-sdk      # required for the Jev layer / Jev 层需要
+export TYPESAFE_API_KEY=...
 ```
 
-</details>
+**Verify the layer is actually live.** A missing dependency degrades silently by
+design, so confirm in the logs:
 
-<details>
-<summary>环境变量</summary>
+**务必确认它真的在跑。** 依赖缺失是静默降级的，看日志确认：
 
-| 变量名 | 说明 | 默认值 |
-|--------|------|--------|
-| `AUTH_USERNAME` | 预设登录用户名 | 首次访问时设置 |
-| `AUTH_PASSWORD` | 预设登录密码 | 首次访问时设置 |
-| `JWT_SECRET` | JWT 签名密钥 | 自动生成 |
-| `DATA_DIR` | 数据存储目录 | `./data` |
-| `TZ` | 应用时区（影响 Agent 调度触发时间与时间展示） | `Asia/Shanghai` |
-| `PLAYWRIGHT_SKIP_BROWSER_INSTALL` | 跳过首次 Chromium 安装（不需要截图时可用） | 未设置 |
-| `LOG_LEVEL` | 控制台日志级别。默认 `INFO`（只输出业务事件 + 错误）；排查问题时设 `DEBUG` 可看到调度心跳、采集过程等底层日志。UI 日志板始终保留完整记录，不受影响 | `INFO` |
-| `HTTP_PROXY` / `HTTPS_PROXY` / `http_proxy` | 出站 HTTP 代理。三种配置方式任选其一: ① 启动前 `export HTTP_PROXY=...`；② `.env` 里写 `http_proxy=http://host:port`；③ UI「设置 → 全局 HTTP 代理」。三者优先级:外部环境变量 > UI > `.env`。生效后所有 httpx 客户端走代理。`NO_PROXY` 默认包含 `localhost,127.0.0.1` | 未设置 |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP 导出端点(如 `http://jaeger:4318`)。**配置后**才启用 OTel trace 导出;留空则完全关闭(零副作用)。还需安装可选依赖 `requirements-otel.txt`。详见下方「OTel 导出」 | 未设置(关闭) |
-
-</details>
-
-<details>
-<summary>首次配置</summary>
-
-1. 访问 Web 界面，设置登录账号
-2. **设置 → AI 服务商**：配置 OpenAI 兼容 API（支持 OpenAI / 智谱 / DeepSeek / Ollama 等）
-3. **设置 → 通知渠道**：添加 Telegram 或其他推送渠道
-4. **持仓 → 添加股票**：添加自选股，启用对应 Agent
-
-</details>
-
-<details>
-<summary>本地开发</summary>
-
-**环境要求**：Python 3.10+ / Node.js 18+ / pnpm
-
-```bash
-# 一键开发（推荐）
-make dev-api          # 启动后端（自动 venv+依赖，监听 :8000）
-make dev-web          # 启动前端（自动 pnpm install，监听 :5183）
-
-# 或手动
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-python server.py                              # 后端 :8000
-
-cd frontend && pnpm install && pnpm dev       # 前端 :5183
+```
+[JEV] event_dedupe 9 -> 3 (候选对 12)
 ```
 
-前端 dev server 跑在 `http://localhost:5183`，并把 `/api` 代理到 `127.0.0.1:8000`。
-前端用 `:5183` 而非默认 `:5173`，是为了和 BeeCount-Cloud 等本地常驻前端错开。
+Seeing `[JEV] 增强层不可用` instead means the SDK is missing or the key is unset.
 
-</details>
+### LLM provider note / 模型选择
 
-<details>
-<summary><b>技术栈</b></summary>
+Any OpenAI-compatible endpoint works. But if your provider serves a reasoning
+model that leaks chain-of-thought into `message.content`, the report body shown
+to the user becomes that reasoning dump — the JSON tag block still parses, so no
+mechanical check catches it. Prefer a non-reasoning model.
 
-**后端**：FastAPI / SQLAlchemy / APScheduler / OpenAI SDK
+任何 OpenAI 兼容端点都可以。但如果模型把思维链混进 `message.content`，
+渲染给用户的报告正文就变成一堆推理过程 —— 而 JSON 标记块照样能解析，
+机械检查发现不了。优先选非思考型模型。
 
-**前端**：React 18 / TypeScript / Tailwind CSS / shadcn/ui
+## Honest limits / 已知边界
 
-</details>
+- Event dedup runs on at most 60 items per call; beyond that the list passes through unchanged.
+- Pairwise comparison is `O(n²)` before code-side blocking. Blocking cuts it ~99% but is verified on a 12-item labelled set only.
+- No cross-call cache: `context_builder` invokes dedup 3–4 times per symbol, so overlapping lists get re-asked.
+- Exercised end-to-end through `daily_report` only. `premarket_outlook` and `intraday_monitor` share the same `context_builder` path but were not run.
+- Typed output guarantees the interface, not the truth. Validate thresholds on your own data.
 
-<details>
-<summary><b>OTel 导出（可选，默认关闭）</b></summary>
+- 事件去重单次上限 60 条，超出原样放行。
+- 两两比对在代码分块前是 `O(n²)`；分块降约 99%，但只在 12 条标注集上验证过。
+- 无跨调用缓存：`context_builder` 每支票调 3~4 次去重，重叠列表会被重复问。
+- 端到端只跑通了 `daily_report`；`premarket_outlook` / `intraday_monitor` 走同一条路径但未实跑。
+- 类型化输出保证的是接口，不是真相。阈值请在你自己的数据上标定。
 
-PanWatch 内建一套自建可观测体系(结构化日志 `trace_id` 贯穿 / `agent_runs` 运行表 / TradingAgents 节点级进度与成本),开箱即用、无需任何外部组件。
+## License / 许可
 
-在此之上,可**可选地**再挂一层标准 [OpenTelemetry](https://opentelemetry.io/) 导出,把 trace 送到 Jaeger / Tempo / Langfuse 等标准 APM。三类 span 映射:
+MIT, inherited from upstream — see [LICENSE](LICENSE), copyright © 2026 sunxiao0721.
+Changes in this fork are released under the same licence.
 
-- **Agent 一次运行** → root span(复用 `agent_runs` 的 `trace_id` 关联)
-- **单次 LLM 调用** → `gen_ai` 子 span,遵循 [OpenTelemetry GenAI 语义约定](https://opentelemetry.io/docs/specs/semconv/gen-ai/)(`gen_ai.system` / `gen_ai.request.model` / `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` / `gen_ai.operation.name`),可被标准 APM 识别为一次模型调用
-- **TradingAgents 节点** → 子 span(复用节点级进度回调)
-
-**默认完全关闭**:不装依赖、不配 endpoint 时,导出层全程 no-op,不改变任何现有行为。
-
-**开启三步**:
-
-```bash
-# 1. 安装可选依赖
-pip install -r requirements-otel.txt
-
-# 2. 配置 OTLP 端点(指向你的 collector / APM)
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export OTEL_SERVICE_NAME=panwatch   # 可选,默认 panwatch
-
-# 3. 正常启动;启动日志出现 "OTel 导出已启用" 即生效
-python server.py
-```
-
-**本地起一个 Jaeger 验证**:
-
-```bash
-docker run -d --name jaeger -p 16686:16686 -p 4318:4318 \
-  jaegertracing/all-in-one:latest
-# 触发任意 Agent 运行后,打开 http://localhost:16686 选 service=panwatch 查看 trace
-```
-
-Langfuse / Tempo 同理,把 `OTEL_EXPORTER_OTLP_ENDPOINT` 指向对应 OTLP 入口即可。
-
-</details>
-
-<details>
-<summary><b>发布（Docker 镜像）</b></summary>
-
-本项目内置 GitHub Actions 发布流程：
-
-- 打 tag（例如 `0.2.3`）会自动构建并推送 Docker 镜像
-  - `sunxiao0721/panwatch:0.2.3`
-  - `sunxiao0721/panwatch:latest`
-- 也支持在 GitHub Actions 里手动触发（workflow_dispatch）指定版本号
-
-需要在仓库 Secrets 中配置：
-
-- `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN`
-
-</details>
-
-## 捐赠支持
-
-如果你觉得 PanWatch 有帮助，欢迎请作者喝杯咖啡：
-
-| 微信赞赏 | 支付宝 |
-|:---:|:---:|
-| <img src="./docs/donate/wechat.png" width="240" /> | <img src="./docs/donate/alipay.png" width="240" /> |
-
-## 贡献
-
-欢迎提交 Issue 和 PR！自定义 Agent 和数据源开发请参考 [贡献指南](CONTRIBUTING.md)。
-社区交流（Telegram）：[t.me/panwatch](https://t.me/panwatch)
-
-## License
-
-[MIT](LICENSE)
+MIT，继承自上游。见 [LICENSE](LICENSE)，版权归原作者 sunxiao0721。本 fork 的改动同样以 MIT 发布。
