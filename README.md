@@ -57,7 +57,8 @@ runs and still produces a report.
 没有 key、没装 SDK、网络故障、限流 —— 一律退回上游原逻辑，Agent 照常跑完。
 
 ```bash
-export JEV_NEWS=0     # hard off, no code change / 一键关闭
+# .env or process env / 写进 .env 或 export 均可
+JEV_NEWS=0            # hard off, no code change / 一键关闭
 ```
 
 | State / 状态 | Result / 结果 |
@@ -72,7 +73,7 @@ export JEV_NEWS=0     # hard off, no code change / 一键关闭
 docker compose up -d          # or the upstream docker run, see README.upstream.md
 
 pip install typesafe-sdk      # required for the Jev layer / Jev 层需要
-export TYPESAFE_API_KEY=...
+# TYPESAFE_API_KEY=...        # in .env (see .env.example) or export
 ```
 
 **Verify the layer is actually live.** A missing dependency degrades silently by

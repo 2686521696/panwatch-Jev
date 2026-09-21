@@ -20,7 +20,7 @@ from src.platform.persistence.models import (
     DataSource,
 )
 from src.platform.observability.log_handler import DBLogHandler
-from src.platform.runtime.config import Settings, AppConfig, StockConfig
+from src.platform.runtime.config import Settings, AppConfig, StockConfig, apply_jev_env
 from src.platform.marketdata.models import MarketCode
 from src.platform.ai.ai_client import AIClient
 from src.platform.ai.ai_failover import build_failover_client
@@ -1455,6 +1455,7 @@ async def lifespan(app):
         logger.warning(f"OTel 初始化跳过: {e}")
     setup_proxy()  # 设置进程 env 代理(HTTP_PROXY/NO_PROXY);所有 httpx(trust_env=True)据此走代理
     setup_ssl()
+    apply_jev_env()  # .env 里的 TYPESAFE_API_KEY / JEV_NEWS 提升到进程环境，供 Jev 层读取
     setup_playwright()
 
     # 从环境变量初始化认证（Docker 部署用）
