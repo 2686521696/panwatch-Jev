@@ -3,6 +3,7 @@
 该模块可同时被 HTTP、后台任务和平台适配器使用；它不包含任何投资或产品决策。
 """
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +32,10 @@ class Settings(BaseSettings):
     context_hard_limit_tokens: int = Field(default=10_200, ge=256)
     context_keep_recent_messages: int = Field(default=8, ge=1, le=100)
     tool_research_enabled: bool = True
+
+    # TypeSafe Jev（可选）
+    typesafe_api_key: str = ""
+    jev_news: bool = True
 
     # Telegram
     notify_telegram_bot_token: str = ""
@@ -78,6 +83,20 @@ class Settings(BaseSettings):
                 "context thresholds must satisfy soft_limit < hard_limit <= max_tokens"
             )
         return self
+
+
+def apply_jev_env(settings: Settings | None = None) -> None:
+    """把 Settings 里的 Jev 配置提升到 os.environ。
+
+    pydantic-settings 读 `.env` 只填 Settings，不会写回进程环境；
+    typesafe_sdk 和 jev_news 都只看 os.environ。已存在的进程变量优先。
+    """
+    s = settings or Settings()
+    key = (s.typesafe_api_key or "").strip()
+    if key:
+        os.environ.setdefault("TYPESAFE_API_KEY", key)
+    if "JEV_NEWS" not in os.environ:
+        os.environ["JEV_NEWS"] = "1" if s.jev_news else "0"
 
 
 @dataclass
