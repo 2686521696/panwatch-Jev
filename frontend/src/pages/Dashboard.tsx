@@ -419,6 +419,35 @@ export default function DashboardPage() {
         ))}
       </div>
 
+      {overview?.market_pulse?.hot_topics?.length ? (
+        <div className="card mb-3 flex flex-wrap items-center gap-2 p-3">
+          <Newspaper className="h-3.5 w-3.5 text-primary" />
+          <span className="text-[11px] text-muted-foreground">新闻主题</span>
+          {overview.market_pulse.topic_sentiment && overview.market_pulse.topic_sentiment !== 'neutral' && (
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] ${
+                overview.market_pulse.topic_sentiment === 'positive'
+                  ? 'bg-rose-500/10 text-rose-500'
+                  : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+              }`}
+            >
+              {overview.market_pulse.topic_sentiment === 'positive' ? '偏多' : '偏空'}
+            </span>
+          )}
+          {overview.market_pulse.hot_topics.map((t) => (
+            <span
+              key={t.name}
+              className="rounded-full bg-accent/50 px-2 py-0.5 text-[11px] text-foreground"
+            >
+              {t.name}
+            </span>
+          ))}
+          {overview.market_pulse.topic_summary && (
+            <span className="w-full text-[11px] text-muted-foreground">{overview.market_pulse.topic_summary}</span>
+          )}
+        </div>
+      ) : null}
+
       {/* 主体:要紧事(7) | 体检(5);机会(5) | 简报(7) */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
         {/* 今日要紧事(主角) */}

@@ -513,6 +513,7 @@ def _load_news_metrics(
 
     now = utc_now()
     metrics: dict[str, dict] = {}
+    matched_rows: list[dict] = []
 
     for n in rows:
         linked = set()
@@ -529,23 +530,55 @@ def _load_news_metrics(
                         linked.add(sym)
             if not linked:
                 continue
-        title = str(n.title or "")
-        content = str(n.content or "")
-        text = f"{title} {content}".lower()
-        event_bias = 0.0
-        for kw in POSITIVE_EVENT_KEYWORDS:
-            if kw.lower() in text:
-                event_bias += 1.0
-        for kw in NEGATIVE_EVENT_KEYWORDS:
-            if kw.lower() in text:
-                event_bias -= 1.2
+        matched_rows.append(
+            {
+                "source": n.source,
+                "external_id": n.external_id,
+                "title": n.title or "",
+                "content": n.content or "",
+                "time": n.publish_time,
+                "publish_time": n.publish_time,
+                "importance": int(n.importance or 0),
+                "symbols": list(linked),
+                "_linked": linked,
+            }
+        )
 
-        importance = int(n.importance or 0)
-        published_at = n.publish_time
+    from src.modules.market.news_ranker import enhance_news_items
+
+    enhanced_rows = enhance_news_items(matched_rows, with_sentiment=True)
+    sentiment_bias = {"positive": 1.0, "negative": -1.2, "neutral": 0.0}
+
+    for n in enhanced_rows:
+        linked = n.get("_linked") or {
+            str(s or "").strip().upper()
+            for s in (n.get("symbols") or [])
+            if str(s or "").strip()
+        }
+        title = str(n.get("title") or "")
+        content = str(n.get("content") or "")
+        text = f"{title} {content}".lower()
+        sent = str(n.get("sentiment") or "")
+        if sent in sentiment_bias:
+            event_bias = sentiment_bias[sent]
+        else:
+            event_bias = 0.0
+            for kw in POSITIVE_EVENT_KEYWORDS:
+                if kw.lower() in text:
+                    event_bias += 1.0
+            for kw in NEGATIVE_EVENT_KEYWORDS:
+                if kw.lower() in text:
+                    event_bias -= 1.2
+
+        importance = int(n.get("importance") or 0)
+        published_at = n.get("publish_time") or n.get("time") or now
         if published_at is None:
             published_at = now
-        if published_at.tzinfo is None:
-            published_at = published_at.replace(tzinfo=now.tzinfo)
+        if getattr(published_at, "tzinfo", None) is None:
+            try:
+                published_at = published_at.replace(tzinfo=now.tzinfo)
+            except Exception:
+                published_at = now
         age_hours = max(0.0, (now - published_at).total_seconds() / 3600.0)
         recency_weight = _clamp(1.0 - age_hours / 72.0, 0.05, 1.0)
         event_weight = recency_weight * (0.8 + 0.6 * importance)

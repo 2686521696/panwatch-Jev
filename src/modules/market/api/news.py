@@ -1,5 +1,4 @@
 """新闻 API - 基于数据源配置"""
-from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -8,6 +7,7 @@ from pydantic import BaseModel
 from src.platform.persistence.database import get_db
 from src.platform.persistence.models import Stock, DataSource
 from src.platform.marketdata.collectors.news_collector import NewsCollector, NewsItem
+from src.modules.market.news_ranker import enhance_news_items
 
 router = APIRouter()
 
@@ -29,6 +29,7 @@ class NewsItemResponse(BaseModel):
     symbols: list[str]
     importance: int
     url: str = ""
+    sentiment: str = "neutral"
 
 
 @router.get("", response_model=list[NewsItemResponse])
@@ -101,7 +102,7 @@ async def get_news(
         text = item.title + (item.content or "")
         return any(kw in text for kw in keywords)
 
-    result = []
+    collected = []
     for item in news_items:
         if source_filters and item.source not in source_filters:
             continue
@@ -116,22 +117,41 @@ async def get_news(
             if sym in symbol_list and (sym in text or name in text):
                 matched_symbols.append(sym)
 
-        result.append(NewsItemResponse(
-            source=item.source,
-            source_label=SOURCE_LABELS.get(item.source, item.source),
-            external_id=item.external_id,
-            title=item.title,
-            content=item.content,
-            publish_time=item.publish_time.strftime("%Y-%m-%d %H:%M"),
-            symbols=matched_symbols or item.symbols,
-            importance=item.importance,
-            url=item.url,
-        ))
+        collected.append({
+            "source": item.source,
+            "external_id": item.external_id,
+            "title": item.title,
+            "content": item.content,
+            "publish_time": item.publish_time.strftime("%Y-%m-%d %H:%M"),
+            "time": item.publish_time,
+            "symbols": matched_symbols or item.symbols,
+            "importance": item.importance,
+            "url": item.url,
+        })
 
-        if len(result) >= limit:
-            break
+    symbol_hint = symbol_list[0] if len(symbol_list) == 1 else ""
+    enhanced = enhance_news_items(collected, symbol=symbol_hint)
 
-    return result
+    def _fmt_time(value) -> str:
+        if hasattr(value, "strftime"):
+            return value.strftime("%Y-%m-%d %H:%M")
+        return str(value or "")
+
+    return [
+        NewsItemResponse(
+            source=it.get("source") or "",
+            source_label=SOURCE_LABELS.get(it.get("source") or "", it.get("source") or ""),
+            external_id=it.get("external_id") or "",
+            title=it.get("title") or "",
+            content=it.get("content") or "",
+            publish_time=_fmt_time(it.get("publish_time") or it.get("time")),
+            symbols=list(it.get("symbols") or []),
+            importance=int(it.get("importance") or 0),
+            url=it.get("url") or "",
+            sentiment=str(it.get("sentiment") or "neutral"),
+        )
+        for it in enhanced[:limit]
+    ]
 
 
 @router.get("/sources")

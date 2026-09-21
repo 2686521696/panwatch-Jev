@@ -210,6 +210,7 @@ interface NewsItem {
   symbols: string[]
   importance: number
   url: string
+  sentiment?: string
 }
 
 interface PriceAlertRuleSummary {
@@ -3066,6 +3067,16 @@ export default function StocksPage() {
                           {item.importance >= 2 && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500">
                               重要
+                            </span>
+                          )}
+                          {item.sentiment === 'positive' && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500">
+                              利好
+                            </span>
+                          )}
+                          {item.sentiment === 'negative' && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                              利空
                             </span>
                           )}
                           <span className="text-[10px] text-muted-foreground">

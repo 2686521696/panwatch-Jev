@@ -180,7 +180,9 @@ async def _fetch_message_context(db: Session, symbol: str, market: str) -> str:
         items = await collector.fetch_all(
             symbols=[symbol], since_hours=72, symbol_names={symbol: name}
         )
-        items = sorted(items, key=lambda x: x.publish_time, reverse=True)[:5]
+        from src.modules.market.news_ranker import enhance_newsitem_objects
+
+        items = enhance_newsitem_objects(items, symbol=symbol)[:5]
         if items:
             lines = [
                 f"- {it.title}（{it.publish_time.strftime('%m-%d')}）" for it in items
@@ -289,13 +291,17 @@ async def _fetch_recent_announcements(symbol: str, name: str, limit: int = 5) ->
         items = await NewsCollector.from_database().fetch_all(
             symbols=[symbol], since_hours=168, symbol_names={symbol: name}
         )
+        from src.modules.market.news_ranker import enhance_newsitem_objects
+
+        items = enhance_newsitem_objects(items, symbol=symbol)
         anns = [it for it in items if it.source == "eastmoney"] or items
-        anns = sorted(anns, key=lambda x: x.publish_time, reverse=True)[:limit]
+        anns = anns[:limit]
         return [
             {
                 "title": a.title,
                 "time": a.publish_time.strftime("%Y-%m-%d %H:%M"),
                 "content": (a.content or "")[:200],
+                "sentiment": getattr(a, "sentiment", "") or "",
             }
             for a in anns
         ]
@@ -354,6 +360,12 @@ async def announcement_eval(req: AnnouncementEvalRequest, db: Session = Depends(
     items = []
     for i, a in enumerate(top):
         tone, note = tone_map.get(i, ("中性", ""))
+        if tone == "中性" and not note:
+            sent = a.get("sentiment") or ""
+            if sent == "positive":
+                tone = "利好"
+            elif sent == "negative":
+                tone = "利空"
         items.append({"title": a["title"], "time": a["time"], "tone": tone, "summary": note})
     result = {"symbol": req.symbol, "market": market, "items": items}
     _ANN_CACHE.set(cache_key, result)

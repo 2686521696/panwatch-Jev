@@ -154,7 +154,7 @@ def rank_news_items(items: list[dict], symbol: str = "") -> list[dict]:
         if "公告" in title:
             s += 1.0
 
-        ts = parse_news_time(str(it.get("time") or "")) or datetime.min
+        ts = parse_news_time(_item_time_value(it)) or datetime.min
         s2 = ts.timestamp() if ts != datetime.min else 0
         return s, s2
 
@@ -223,3 +223,98 @@ def summarize_news_topics(items: list[dict], max_topics: int = 6) -> dict:
             "neutral": int(senti_counter["neutral"]),
         },
     }
+
+
+def _item_time_value(it: dict):
+    return it.get("time") or it.get("publish_time") or it.get("published_at")
+
+
+def news_item_to_rank_dict(item) -> dict:
+    """NewsItem / SimpleNamespace / dict → ranker 用的 dict，保留额外字段。"""
+    if isinstance(item, dict):
+        d = dict(item)
+    else:
+        pt = getattr(item, "publish_time", None) or getattr(item, "time", None)
+        d = {
+            "source": str(getattr(item, "source", "") or ""),
+            "external_id": str(getattr(item, "external_id", "") or ""),
+            "title": str(getattr(item, "title", "") or ""),
+            "content": str(getattr(item, "content", "") or ""),
+            "publish_time": pt,
+            "time": pt,
+            "symbols": list(getattr(item, "symbols", None) or []),
+            "importance": int(getattr(item, "importance", 0) or 0),
+            "url": str(getattr(item, "url", "") or ""),
+        }
+    if not d.get("time"):
+        d["time"] = d.get("publish_time") or d.get("published_at") or ""
+    if d.get("symbols") is None:
+        d["symbols"] = []
+    try:
+        d["importance"] = int(d.get("importance") or 0)
+    except (TypeError, ValueError):
+        d["importance"] = 0
+    return d
+
+
+def fill_missing_importance(items: list[dict]) -> list[dict]:
+    """只填 importance 为 0 的条目；Jev 不可用时原样返回。"""
+    if _jev is not None and _jev.enabled():
+        try:
+            return _jev.fill_importance(items)
+        except Exception:  # noqa: BLE001 - fail-open
+            pass
+    return items
+
+
+def enhance_news_items(
+    items,
+    *,
+    symbol: str = "",
+    with_sentiment: bool = True,
+    max_items: int = 60,
+) -> list[dict]:
+    """采集结果的统一后处理：字面去重 → 截断 → 语义去重 → 填重要性并排序 → 情绪。
+
+    超过 max_items 时先按时间截断，否则 Jev 会因上限直接跳过语义层。
+    """
+    rows = [news_item_to_rank_dict(it) for it in items or []]
+    if not rows:
+        return []
+    rows = _exact_dedupe(rows)
+    if len(rows) > max_items:
+        rows = sorted(
+            rows,
+            key=lambda it: parse_news_time(_item_time_value(it)) or datetime.min,
+            reverse=True,
+        )[:max_items]
+    rows = dedupe_news_items(rows)
+    rows = rank_news_items(rows, symbol=symbol)
+    if with_sentiment:
+        summarize_news_topics(rows)
+    return rows
+
+
+def enhance_newsitem_objects(items, *, symbol: str = "", with_sentiment: bool = True):
+    """对 NewsItem 列表做同样增强，返回新的 NewsItem（可带 sentiment 属性）。"""
+    from src.platform.marketdata.collectors.news_collector import NewsItem
+
+    out: list = []
+    for d in enhance_news_items(items, symbol=symbol, with_sentiment=with_sentiment):
+        pt = d.get("publish_time") or d.get("time")
+        if not isinstance(pt, datetime):
+            pt = parse_news_time(pt) or datetime.now()
+        obj = NewsItem(
+            source=str(d.get("source") or ""),
+            external_id=str(d.get("external_id") or ""),
+            title=str(d.get("title") or ""),
+            content=str(d.get("content") or ""),
+            publish_time=pt,
+            symbols=list(d.get("symbols") or []),
+            importance=int(d.get("importance") or 0),
+            url=str(d.get("url") or ""),
+        )
+        if d.get("sentiment"):
+            obj.sentiment = d["sentiment"]
+        out.append(obj)
+    return out

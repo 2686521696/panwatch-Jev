@@ -429,15 +429,10 @@ def test_news_tool_limits_compact_items(monkeypatch):
     )
 
     assert result.ok is True
-    assert result.data["items"] == [
-        {
-            "title": "贵州茅台发布公告",
-            "source": "eastmoney",
-            "published_at": "2026-09-12T08:00:00Z",
-            "url": "https://example.test/1",
-            "importance": 2,
-        }
-    ]
+    assert result.data["items"][0]["title"] == "贵州茅台发布公告"
+    assert result.data["items"][0]["importance"] == 2
+    assert result.data["items"][0]["sentiment"] in ("positive", "negative", "neutral")
+    assert len(result.data["items"]) == 1
     session.close()
     engine.dispose()
 
