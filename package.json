@@ -1,0 +1,11 @@
+{
+  "name": "panwatch-jev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "all": "node scripts/dev-all.mjs",
+    "stop": "node scripts/dev-stop.mjs",
+    "dev:all": "node scripts/dev-all.mjs",
+    "dev:stop": "node scripts/dev-stop.mjs"
+  }
+}
