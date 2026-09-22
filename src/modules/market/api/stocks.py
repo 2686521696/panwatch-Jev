@@ -68,6 +68,12 @@ class StockAgentUpdate(BaseModel):
     agents: list[StockAgentItem]
 
 
+class StockAgentBulkBind(BaseModel):
+    stock_ids: list[int]
+    agent_name: str
+    enabled: bool
+
+
 class StockReorderItem(BaseModel):
     id: int
     sort_order: int
@@ -403,6 +409,71 @@ def delete_group_stock(group_id: int, stock_id: int, db: Session = Depends(get_d
     db.delete(member)
     db.commit()
     return {"ok": True}
+
+
+@router.put("/agents/bulk")
+def bulk_bind_stock_agent(body: StockAgentBulkBind, db: Session = Depends(get_db)):
+    """为一批股票绑定或解绑同一个 Agent，不改动其它绑定，也不触发分析。"""
+    agent_name = (body.agent_name or "").strip()
+    if not agent_name:
+        raise HTTPException(400, "agent_name 不能为空")
+
+    stock_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in body.stock_ids:
+        if raw_id in seen:
+            continue
+        seen.add(raw_id)
+        stock_ids.append(raw_id)
+    if not stock_ids:
+        raise HTTPException(400, "stock_ids 不能为空")
+    if len(stock_ids) > 500:
+        raise HTTPException(400, "一次最多处理 500 只股票")
+
+    agent = db.query(AgentConfig).filter(AgentConfig.name == agent_name).first()
+    if not agent:
+        raise HTTPException(400, f"Agent {agent_name} 不存在")
+    agent_kind = (agent.kind or "").strip() or infer_agent_kind(agent.name)
+    if agent_kind != AGENT_KIND_WORKFLOW:
+        raise HTTPException(400, f"Agent {agent_name} 为内部能力，不支持绑定到股票")
+
+    stocks = db.query(Stock).filter(Stock.id.in_(stock_ids)).all()
+    found = {stock.id: stock for stock in stocks}
+    missing_ids = [stock_id for stock_id in stock_ids if stock_id not in found]
+    updated = 0
+    for stock_id in stock_ids:
+        if stock_id not in found:
+            continue
+        existing = (
+            db.query(StockAgent)
+            .filter(StockAgent.stock_id == stock_id, StockAgent.agent_name == agent_name)
+            .first()
+        )
+        if body.enabled:
+            if existing:
+                continue
+            db.add(StockAgent(
+                stock_id=stock_id,
+                agent_name=agent_name,
+                schedule="",
+                ai_model_id=None,
+                notify_channel_ids=[],
+            ))
+            updated += 1
+        elif existing:
+            db.delete(existing)
+            updated += 1
+
+    db.commit()
+    db.expire_all()
+    order = {stock_id: index for index, stock_id in enumerate(stock_ids)}
+    refreshed = db.query(Stock).filter(Stock.id.in_(list(found))).all() if found else []
+    refreshed.sort(key=lambda stock: order.get(stock.id, 0))
+    return {
+        "updated": updated,
+        "missing_ids": missing_ids,
+        "stocks": [_stock_to_response(stock) for stock in refreshed],
+    }
 
 
 @router.put("/{stock_id}", response_model=StockResponse)

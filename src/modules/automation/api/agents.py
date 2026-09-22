@@ -861,7 +861,11 @@ def get_agent_history(agent_name: str, limit: int = 20, db: Session = Depends(ge
 
 
 @router.post("/intraday/scan")
-async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
+async def scan_intraday(
+    analyze: bool = False,
+    include_closed: bool = False,
+    db: Session = Depends(get_db),
+):
     """
     实时扫描盘中监测 Agent 关联的股票
 
@@ -869,9 +873,11 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
     - 只扫描启用了「盘中监测」Agent 的股票
     - 返回所有股票的实时行情和技术分析
     - analyze=True 时调用 AI 分析，返回结构化建议
+    - include_closed=True 时不跳过非交易时段（持仓页手动/自动刷新用）
 
     Args:
         analyze: 是否调用 AI 分析生成操作建议（默认 False）
+        include_closed: 非交易时段也分析（默认 False）
     """
     from server import (
         load_watchlist_for_agent,
@@ -902,10 +908,13 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
             "has_watchlist": False,
         }
 
-    # 按股票所属市场过滤：只扫描当前开市市场的股票（避免全局门禁误判）
-    active_watchlist = [
-        s for s in watchlist if MARKETS.get(s.market) and MARKETS[s.market].is_trading_time()
-    ]
+    # 定时扫描只看开市市场。持仓页刷新可带 include_closed，避免盘前徽章一直停在过期建议。
+    if include_closed:
+        active_watchlist = list(watchlist)
+    else:
+        active_watchlist = [
+            s for s in watchlist if MARKETS.get(s.market) and MARKETS[s.market].is_trading_time()
+        ]
     if not active_watchlist:
         return {
             "stocks": [],
