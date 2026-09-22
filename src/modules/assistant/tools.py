@@ -31,6 +31,7 @@ from src.platform.marketdata.collectors.discovery_collector import (
     EastMoneyDiscoveryCollector,
 )
 from src.platform.marketdata.collectors.kline_collector import KlineCollector
+from src.modules.market.news_ranker import enhance_news_items
 from src.platform.marketdata.marketdata_client import (
     get_market_data,
     md_news,
@@ -341,15 +342,19 @@ def build_panwatch_tool_registry(session: Session) -> ToolRegistry:
             return ToolResult.failure(
                 summary="新闻数据暂时不可用。", error_code="news_unavailable"
             )
+        ranked = enhance_news_items(articles, symbol=symbol)
         items = [
             {
-                "title": str(getattr(article, "title", "") or ""),
-                "source": str(getattr(article, "source", "") or ""),
-                "published_at": _published_at(getattr(article, "publish_time", None)),
-                "url": str(getattr(article, "url", "") or ""),
-                "importance": int(getattr(article, "importance", 0) or 0),
+                "title": str(article.get("title") or ""),
+                "source": str(article.get("source") or ""),
+                "published_at": _published_at(
+                    article.get("publish_time") or article.get("time")
+                ),
+                "url": str(article.get("url") or ""),
+                "importance": int(article.get("importance") or 0),
+                "sentiment": str(article.get("sentiment") or "neutral"),
             }
-            for article in articles[:limit]
+            for article in ranked[:limit]
         ]
         return ToolResult.success(
             summary=f"{market.value}:{symbol} 近 7 天相关新闻 {len(items)} 条。",

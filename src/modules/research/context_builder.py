@@ -13,6 +13,7 @@ from src.modules.research.context_store import (
 from src.modules.market.kline_context import build_kline_history_context
 from src.modules.market.news_ranker import (
     dedupe_news_items,
+    fill_missing_importance,
     parse_news_time,
     rank_news_items,
     summarize_news_topics,
@@ -487,8 +488,12 @@ class ContextBuilder:
                 [dict(it) for it in realtime_ranked[:8]], top_k=2, max_chars=800
             )
             # ① 重要公告(importance>=2)的前 2-3 条附加东财全文(纯文本,~1000 字)
+            raw_events = [
+                dict(ev)
+                for ev in ((pack.events.items if (pack and pack.events) else [])[:8])
+            ]
             events_for_payload = self._enrich_events_fulltext(
-                [dict(ev) for ev in ((pack.events.items if (pack and pack.events) else [])[:8])],
+                fill_missing_importance(raw_events),
                 top_k=3,
                 importance_min=2,
             )

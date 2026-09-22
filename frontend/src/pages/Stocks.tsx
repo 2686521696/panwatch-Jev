@@ -17,6 +17,8 @@ import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import StockInsightModal from '@panwatch/biz-ui/components/stock-insight-modal'
 import { DeepAnalysisModal } from '@panwatch/biz-ui/components/deep-analysis-modal'
 import StockPriceAlertPanel from '@panwatch/biz-ui/components/stock-price-alert-panel'
+import StockGroupsPanel from '@/components/StockGroupsPanel'
+import { normalizeSuggestionAction, suggestionActionLabels, type SuggestionAction } from '@panwatch/biz-ui/components/suggestion-action'
 
 interface AgentResult {
   success?: boolean
@@ -112,6 +114,17 @@ interface AgentConfig {
   enabled: boolean
   schedule: string
   execution_mode: string  // batch: 批量分析, single: 逐只分析
+}
+
+const AGENT_SHORT_LABELS: Record<string, string> = {
+  premarket_outlook: '盘前',
+  intraday_monitor: '盘中',
+  daily_report: '收盘',
+  tradingagents: '深度',
+}
+
+function agentShortLabel(agent: { name: string; display_name: string }) {
+  return AGENT_SHORT_LABELS[agent.name] || agent.display_name.slice(0, 4)
 }
 
 interface SchedulePreview {
@@ -210,6 +223,7 @@ interface NewsItem {
   symbols: string[]
   importance: number
   url: string
+  sentiment?: string
 }
 
 interface PriceAlertRuleSummary {
@@ -359,14 +373,27 @@ export default function StocksPage() {
   // Alerts / Scanning
   const [scanning, setScanning] = useState(false)
 
-  type ViewTab = 'positions' | 'watchlist'
+  type ViewTab = 'positions' | 'watchlist' | 'groups'
   const [viewTab, setViewTab] = useLocalStorage<ViewTab>('panwatch_stocks_viewTab', 'positions')
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('panwatch_groups_intro') === '1') return
+      localStorage.setItem('panwatch_groups_intro', '1')
+      setViewTab('groups')
+    } catch {
+      /* ignore */
+    }
+  }, [setViewTab])
 
   // 股票 AI 建议（来自盘中监控 API）
   const [suggestions] = useState<Record<string, StockSuggestionData>>({})
   // 建议池建议（来自 /suggestions API）
   const [poolSuggestions, setPoolSuggestions] = useState<Record<string, PoolSuggestion>>({})
+  const [jevSuggestions, setJevSuggestions] = useState<Record<string, PoolSuggestion>>({})
   const [poolSuggestionsLoading, setPoolSuggestionsLoading] = useState(false)
+  const [aiScanRunning, setAiScanRunning] = useState(false)
+  const aiScanInFlight = useRef(false)
+  const aiScanLastStarted = useRef(0)
   const [priceAlertSummaryMap, setPriceAlertSummaryMap] = useState<Record<string, { total: number; enabled: number }>>({})
 
   // News Dialog
@@ -395,6 +422,10 @@ export default function StocksPage() {
 
   // Stock form
   const [showStockForm, setShowStockForm] = useState(false)
+  const [addStockGroups, setAddStockGroups] = useState<{ id: number; name: string }[]>([])
+  const [addStockGroupsLoading, setAddStockGroupsLoading] = useState(false)
+  const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([])
+  const [groupsRefreshKey, setGroupsRefreshKey] = useState(0)
   const [stockForm, setStockForm] = useState<StockForm>(emptyStockForm)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMarket, setSearchMarket] = useState('')  // 搜索市场筛选
@@ -423,6 +454,8 @@ export default function StocksPage() {
 
   // Agent dialog
   const [agentDialogStock, setAgentDialogStock] = useState<Stock | null>(null)
+  const [agentBindStockIds, setAgentBindStockIds] = useState<Set<number>>(new Set())
+  const [bulkBind, setBulkBind] = useState<{ agentName: string; done: number; total: number } | null>(null)
 
   // 深度分析(TradingAgents)弹窗
   const [deepAnalysisTarget, setDeepAnalysisTarget] = useState<{
@@ -443,6 +476,10 @@ export default function StocksPage() {
   // Stock list filter
   const [stockListFilter, setStockListFilter] = useState('')  // '' = 全部, 'CN' = A股, 'HK' = 港股, 'US' = 美股
   const [watchlistOnlyAlerts, setWatchlistOnlyAlerts] = useLocalStorage<boolean>('panwatch_watchlist_only_alerts', false)
+  const [watchlistQuery, setWatchlistQuery] = useState('')
+  const [watchlistAction, setWatchlistAction] = useState<SuggestionAction | ''>('')
+  const [watchlistGroupId, setWatchlistGroupId] = useState<number | null>(null)
+  const [watchlistGroups, setWatchlistGroups] = useState<{ id: number; name: string; stockIds: number[] }[]>([])
 
   // Remove watchlist modal
   const [removeWatchStock, setRemoveWatchStock] = useState<Stock | null>(null)
@@ -454,6 +491,42 @@ export default function StocksPage() {
   const positionDragSnapshotRef = useRef<PortfolioSummary | null>(null)
 
   const { toast } = useToast()
+
+  useEffect(() => {
+    if (viewTab !== 'watchlist') return
+    let cancelled = false
+    fetchAPI<Array<{ id: number; name: string; members?: { stock_id: number }[] }>>('/stocks/groups')
+      .then(rows => {
+        if (cancelled || !Array.isArray(rows)) return
+        setWatchlistGroups(rows.map(group => ({
+          id: group.id,
+          name: group.name,
+          stockIds: (group.members || []).map(member => member.stock_id),
+        })))
+      })
+      .catch(() => { if (!cancelled) setWatchlistGroups([]) })
+    return () => { cancelled = true }
+  }, [viewTab, groupsRefreshKey])
+
+  useEffect(() => {
+    if (!showStockForm) return
+    let cancelled = false
+    setAddStockGroupsLoading(true)
+    fetchAPI<Array<{ id: number; name: string }>>('/stocks/groups')
+      .then(rows => {
+        if (cancelled) return
+        setAddStockGroups(Array.isArray(rows) ? rows.map(row => ({ id: row.id, name: row.name })) : [])
+      })
+      .catch(error => {
+        if (cancelled) return
+        setAddStockGroups([])
+        toast(error instanceof Error ? error.message : '加载分组失败', 'error')
+      })
+      .finally(() => {
+        if (!cancelled) setAddStockGroupsLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [showStockForm, toast])
 
   const moveById = <T extends { id: number }>(list: T[], fromId: number, toId: number): T[] => {
     const fromIdx = list.findIndex(x => x.id === fromId)
@@ -526,14 +599,6 @@ export default function StocksPage() {
     }
   }, [persistPositionOrder, portfolioRaw, toast])
 
-  const isSuppressCardClick = () => {
-    try {
-      const until = (window as any).__panwatch_suppress_card_click_until
-      return typeof until === 'number' && Date.now() < until
-    } catch {
-      return false
-    }
-  }
   const searchTimer = useRef<ReturnType<typeof setTimeout>>()
   const dropdownRef = useRef<HTMLDivElement>(null)
 
@@ -704,6 +769,18 @@ export default function StocksPage() {
     try {
       const data = await fetchAPI<Record<string, PoolSuggestion>>('/suggestions?include_expired=true')
       setPoolSuggestions(data)
+      try {
+        const jev = await fetchAPI<Record<string, PoolSuggestion>>(
+          '/suggestions?include_expired=true&agent_name=jev_direction',
+        )
+        const onlyJev: Record<string, PoolSuggestion> = {}
+        for (const [key, row] of Object.entries(jev || {})) {
+          if (row?.agent_name === 'jev_direction') onlyJev[key] = row
+        }
+        setJevSuggestions(onlyJev)
+      } catch (e) {
+        console.warn('加载 Jev 方向失败:', e)
+      }
     } catch (e) {
       console.warn('加载建议池失败:', e)
     } finally {
@@ -793,15 +870,6 @@ export default function StocksPage() {
     return (agent.schedule || '').trim()
   }
 
-  // Refresh quotes only (decoupled from portfolio and scans)
-  const handleRefresh = useCallback(async () => {
-    await Promise.all([
-      refreshQuotes(),
-      loadPoolSuggestions(),
-      refreshKlines(),
-    ])
-  }, [refreshQuotes, loadPoolSuggestions, refreshKlines])
-
   useEffect(() => { load(); loadPortfolio(); loadPoolSuggestions(); loadPriceAlertSummaries(); refreshKlines() }, [])
 
   // 仅关注列表场景（无持仓）也要在列表加载后预取 K 线摘要，保证技术指标徽章可见
@@ -884,13 +952,45 @@ export default function StocksPage() {
     return () => { cancelled = true }
   }, [agentDialogStock, agents, schedulePreviewCache, schedulePreviewLoading])
 
+  // 重跑盘中监测并写回建议池。行情可以 30 秒一刷，模型不能跟着打满，所以最短间隔 90 秒，且上一轮没结束就跳过。
+  const refreshAiSuggestions = useCallback(async (force = false) => {
+    const now = Date.now()
+    if (aiScanInFlight.current) return
+    if (!force && now - aiScanLastStarted.current < 90_000) return
+    aiScanInFlight.current = true
+    aiScanLastStarted.current = now
+    setAiScanRunning(true)
+    try {
+      const result = await fetchAPI<{ message?: string; scanned_count?: number; has_watchlist?: boolean }>(
+        '/agents/intraday/scan?analyze=true&include_closed=true',
+        { method: 'POST', timeoutMs: 600_000 },
+      )
+      await loadPoolSuggestions()
+      if (force && result && result.has_watchlist === false) {
+        toast(result.message || '没有股票启用盘中监测，AI 建议不会更新', 'info')
+      }
+    } catch (e) {
+      console.warn('刷新 AI 建议失败:', e)
+      if (force) toast(e instanceof Error ? e.message : '刷新 AI 建议失败', 'error')
+    } finally {
+      aiScanInFlight.current = false
+      setAiScanRunning(false)
+    }
+  }, [loadPoolSuggestions, toast])
+
+  const handleRefresh = useCallback(async () => {
+    await Promise.all([
+      refreshQuotes(),
+      refreshKlines(),
+      refreshAiSuggestions(true),
+    ])
+  }, [refreshQuotes, refreshKlines, refreshAiSuggestions])
+
   // 触发扫描：调用盘中监控扫描，并刷新建议池
   const scanAndReload = useCallback(async () => {
     setScanning(true)
     try {
-      const url = '/agents/intraday/scan?analyze=true'
-      await fetchAPI(url, { method: 'POST' })
-      await loadPoolSuggestions()
+      await refreshAiSuggestions(true)
       await refreshKlines()
       setLastRefreshTime(new Date())
     } catch (e) {
@@ -899,7 +999,7 @@ export default function StocksPage() {
     } finally {
       setScanning(false)
     }
-  }, [loadPoolSuggestions, refreshKlines, toast])
+  }, [refreshAiSuggestions, refreshKlines, toast])
 
   // 首次加载后，按需刷新 K 线摘要与建议池
   const initialKlineDone = useRef(false)
@@ -917,10 +1017,12 @@ export default function StocksPage() {
       refreshQuotes()
       refreshKlines()
       loadPoolSuggestions()
+      refreshAiSuggestions(false)
       refreshTimerRef.current = setInterval(() => {
         refreshQuotes()
         refreshKlines()
         loadPoolSuggestions()
+        refreshAiSuggestions(false)
       }, refreshInterval * 1000)
     } else {
       // Clear interval when disabled
@@ -935,7 +1037,7 @@ export default function StocksPage() {
         clearInterval(refreshTimerRef.current)
       }
     }
-  }, [autoRefresh, refreshInterval, refreshQuotes, refreshKlines])
+  }, [autoRefresh, refreshInterval, refreshQuotes, refreshKlines, loadPoolSuggestions, refreshAiSuggestions])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -1000,12 +1102,32 @@ export default function StocksPage() {
   const handleStockSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      await stocksApi.create(stockForm)
+      let alreadyExists = false
+      try {
+        await stocksApi.create(stockForm)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : ''
+        if (!message.includes('已存在') || selectedGroupIds.length === 0) throw err
+        alreadyExists = true
+      }
+      for (const groupId of selectedGroupIds) {
+        await fetchAPI(`/stocks/groups/${groupId}/stocks`, {
+          method: 'POST',
+          body: JSON.stringify({
+            symbol: stockForm.symbol,
+            name: stockForm.name,
+            market: stockForm.market,
+          }),
+        })
+      }
       setStockForm(emptyStockForm)
       setSearchQuery('')
+      setSelectedGroupIds([])
       setShowStockForm(false)
       load()
-      toast('股票已添加', 'success')
+      setGroupsRefreshKey(key => key + 1)
+      const groupNote = selectedGroupIds.length > 0 ? `，已加入 ${selectedGroupIds.length} 个分组` : ''
+      toast(alreadyExists ? `股票已在自选中${groupNote}` : `股票已添加${groupNote}`, 'success')
     } catch (e) {
       toast(e instanceof Error ? e.message : '添加股票失败', 'error')
     }
@@ -1223,18 +1345,49 @@ export default function StocksPage() {
   }
 
   // ========== Agent handlers ==========
+  const mergeStockAgents = (updated: Stock[]) => {
+    if (!updated.length) return
+    const map = new Map(updated.map(stock => [stock.id, stock]))
+    setStocks(prev => prev.map(stock => map.get(stock.id) || stock))
+    setAgentDialogStock(prev => {
+      if (!prev) return prev
+      const next = map.get(prev.id)
+      return next ? { ...prev, agents: next.agents || [] } : prev
+    })
+  }
+
+  const saveStockAgents = (stock: Stock, agents: StockAgentInfo[]) =>
+    fetchAPI<Stock>(`/stocks/${stock.id}/agents`, {
+      method: 'PUT',
+      body: JSON.stringify({ agents }),
+    })
+
+  const nextAgentsFor = (stock: Stock, agentName: string, enabled: boolean): StockAgentInfo[] => {
+    const current = stock.agents || []
+    const exists = current.some(agent => agent.agent_name === agentName)
+    if (enabled && !exists) {
+      return [...current, { agent_name: agentName, schedule: '', ai_model_id: null, notify_channel_ids: [] }]
+    }
+    if (!enabled && exists) return current.filter(agent => agent.agent_name !== agentName)
+    return current
+  }
+
   const toggleAgent = async (stock: Stock, agentName: string) => {
+    if (agentBindStockIds.has(stock.id) || bulkBind) return
+    const current = stock.agents || []
+    const enabled = !current.some(agent => agent.agent_name === agentName)
+    setAgentBindStockIds(prev => new Set(prev).add(stock.id))
     try {
-      const current = stock.agents || []
-      const isAssigned = current.some(a => a.agent_name === agentName)
-      const newAgents = isAssigned
-        ? current.filter(a => a.agent_name !== agentName)
-        : [...current, { agent_name: agentName, schedule: '', ai_model_id: null, notify_channel_ids: [] }]
-      await fetchAPI(`/stocks/${stock.id}/agents`, { method: 'PUT', body: JSON.stringify({ agents: newAgents }) })
-      load()
-      setAgentDialogStock(prev => prev ? { ...prev, agents: newAgents } : null)
+      const updated = await saveStockAgents(stock, nextAgentsFor(stock, agentName, enabled))
+      mergeStockAgents([updated])
     } catch (e) {
       toast(e instanceof Error ? e.message : '更新 Agent 绑定失败', 'error')
+    } finally {
+      setAgentBindStockIds(prev => {
+        const next = new Set(prev)
+        next.delete(stock.id)
+        return next
+      })
     }
   }
 
@@ -1354,36 +1507,46 @@ export default function StocksPage() {
     return priceAlertSummaryMap[key] || { total: 0, enabled: 0 }
   }
 
+  const lookupPool = (table: Record<string, PoolSuggestion>, symbol: string, market: string): PoolSuggestion | null => {
+    const key = `${market || 'CN'}:${symbol}`
+    const direct = table[key]
+    if (direct) return direct
+    const fallback = table[symbol]
+    if (!fallback) return null
+    const fallbackMarket = String(fallback.stock_market || '').toUpperCase()
+    return fallbackMarket && fallbackMarket !== String(market || 'CN').toUpperCase() ? null : fallback
+  }
+
+  const toSuggestionInfo = (poolSug: PoolSuggestion): SuggestionInfo => ({
+    id: poolSug.id,
+    action: poolSug.action,
+    action_label: poolSug.action_label,
+    signal: poolSug.signal,
+    reason: poolSug.reason,
+    should_alert: poolSug.should_alert ?? (['alert', 'avoid', 'sell', 'reduce'].includes(poolSug.action)),
+    agent_name: poolSug.agent_name,
+    agent_label: poolSug.agent_label,
+    created_at: poolSug.created_at,
+    is_expired: poolSug.is_expired,
+    prompt_context: poolSug.prompt_context,
+    ai_response: poolSug.ai_response,
+    meta: poolSug.meta,
+  })
+
+  const getJevForStock = (symbol: string, market: string): SuggestionInfo | null => {
+    const row = lookupPool(jevSuggestions, symbol, market)
+    return row ? toSuggestionInfo(row) : null
+  }
+
   // 获取股票的建议信息（优先使用建议池，包含来源和时间信息）
   const getSuggestionForStock = (symbol: string, market: string, hasPosition?: boolean): { suggestion: SuggestionInfo | null; kline: KlineSummary | null } => {
     const key = `${market || 'CN'}:${symbol}`
-    // 优先使用建议池的建议（包含来源和时间信息）
-    const poolSug =
-      poolSuggestions[key] ||
-      (() => {
-        const fallback = poolSuggestions[symbol]
-        if (!fallback) return null
-        const fm = String(fallback.stock_market || '').toUpperCase()
-        return fm && fm !== String(market || 'CN').toUpperCase() ? null : fallback
-      })()
+    // 优先使用建议池的建议（包含来源和时间信息）。Jev 方向另存，不占用这条。
+    const poolSug = lookupPool(poolSuggestions, symbol, market)
     if (poolSug) {
       const preloadedKline = klineSummaries[key] || (suggestions[symbol]?.kline as any) || null
       return {
-        suggestion: {
-          id: poolSug.id,
-          action: poolSug.action,
-          action_label: poolSug.action_label,
-          signal: poolSug.signal,
-          reason: poolSug.reason,
-          should_alert: poolSug.should_alert ?? (['alert', 'avoid', 'sell', 'reduce'].includes(poolSug.action)),
-          agent_name: poolSug.agent_name,
-          agent_label: poolSug.agent_label,
-          created_at: poolSug.created_at,
-          is_expired: poolSug.is_expired,
-          prompt_context: poolSug.prompt_context,
-          ai_response: poolSug.ai_response,
-          meta: poolSug.meta,
-        },
+        suggestion: toSuggestionInfo(poolSug),
         // 优先使用本页并发预取的 kline 摘要，确保徽章与弹窗一致且免加载
         kline: preloadedKline,
       }
@@ -1407,6 +1570,158 @@ export default function StocksPage() {
     }
 
     return { suggestion: null, kline: null }
+  }
+
+  const watchlistActionsOf = (stock: Stock) => {
+    const found = new Set<SuggestionAction>()
+    const { suggestion, kline } = getSuggestionForStock(stock.symbol, stock.market, false)
+    const add = (action?: string, label?: string) => {
+      const normalized = normalizeSuggestionAction(action, label)
+      if (normalized) found.add(normalized)
+    }
+    if (suggestion) add(suggestion.action, suggestion.action_label)
+    const jev = getJevForStock(stock.symbol, stock.market)
+    if (jev) add(jev.action, jev.action_label)
+    if (kline) {
+      const tech = buildKlineSuggestion(kline as any, false)
+      add(tech.action, tech.action_label)
+    }
+    return found
+  }
+
+  const watchlistScoped = stocks.filter(stock => {
+    if (stockListFilter && stock.market !== stockListFilter) return false
+    const query = watchlistQuery.trim().toLowerCase()
+    if (query && !stock.symbol.toLowerCase().includes(query) && !stock.name.toLowerCase().includes(query)) return false
+    if (watchlistGroupId != null) {
+      const group = watchlistGroups.find(item => item.id === watchlistGroupId)
+      if (!group || !group.stockIds.includes(stock.id)) return false
+    }
+    return true
+  })
+
+  const watchlistActionCounts = watchlistScoped.reduce<Record<string, number>>((acc, stock) => {
+    for (const action of watchlistActionsOf(stock)) acc[action] = (acc[action] || 0) + 1
+    return acc
+  }, {})
+
+  const visibleWatchStocks = watchlistScoped
+    .filter(stock => !watchlistAction || watchlistActionsOf(stock).has(watchlistAction))
+    .filter(stock => {
+      if (!watchlistOnlyAlerts) return true
+      return !!getSuggestionForStock(stock.symbol, stock.market, false).suggestion?.should_alert
+    })
+    .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || a.id - b.id)
+
+  const watchlistReorderable = !stockListFilter && !watchlistOnlyAlerts && !watchlistQuery.trim() && !watchlistAction && watchlistGroupId == null
+  const watchlistFilterActive = !watchlistReorderable
+
+  const applyBulkAgent = async (agentName: string, enabled: boolean) => {
+    if (bulkBind || agentBindStockIds.size > 0) return
+    const targets = visibleWatchStocks.filter(stock =>
+      (stock.agents || []).some(agent => agent.agent_name === agentName) !== enabled
+    )
+    if (targets.length === 0) {
+      toast(enabled ? '当前列表已全部开启' : '当前列表已全部关闭', 'info')
+      return
+    }
+    const label = agents.find(agent => agent.name === agentName)?.display_name || agentName
+    if ((agentName === 'tradingagents' && enabled) || targets.length >= 20) {
+      const extra = !enabled
+        ? '只解除绑定，不会删除已有建议。'
+        : agentName === 'tradingagents'
+          ? '只保存绑定，不会自动开始分析。'
+          : agentName === 'intraday_monitor'
+            ? '只保存绑定。盘中监测会在下次自动刷新时分析这些股票。'
+            : '只保存绑定，不会马上开始分析。'
+      if (!window.confirm(`将为当前 ${targets.length} 只股票${enabled ? '开启' : '关闭'}「${label}」。\n${extra}`)) return
+    }
+    setBulkBind({ agentName, done: 0, total: targets.length })
+    try {
+      let changed = 0
+      try {
+        const res = await fetchAPI<{ updated: number; missing_ids: number[]; stocks: Stock[] }>('/stocks/agents/bulk', {
+          method: 'PUT',
+          body: JSON.stringify({
+            stock_ids: targets.map(stock => stock.id),
+            agent_name: agentName,
+            enabled,
+          }),
+          timeoutMs: 60000,
+        })
+        changed = res.updated
+        mergeStockAgents(res.stocks || [])
+        if (res.missing_ids?.length) toast(`${res.missing_ids.length} 只股票未找到，已跳过`, 'info')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ''
+        if (!/not found|404/i.test(message)) throw error
+        for (let index = 0; index < targets.length; index += 1) {
+          const stock = targets[index]
+          const updated = await saveStockAgents(stock, nextAgentsFor(stock, agentName, enabled))
+          mergeStockAgents([updated])
+          changed += 1
+          setBulkBind({ agentName, done: index + 1, total: targets.length })
+        }
+      }
+      toast(enabled ? `已为 ${changed} 只开启${label}` : `已为 ${changed} 只关闭${label}`, 'success')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '批量操作失败', 'error')
+    } finally {
+      setBulkBind(null)
+    }
+  }
+
+  const renderStockAgentToggles = (stock: Stock) => {
+    if (agents.length === 0) {
+      return stock.agents?.length
+        ? <Badge variant="secondary" className="text-[10px]">{stock.agents.length} Agent</Badge>
+        : <span className="text-[10px] text-muted-foreground/60">未配置 Agent</span>
+    }
+    const stockBusy = agentBindStockIds.has(stock.id)
+    return (
+      <div className="flex flex-wrap items-center gap-1" draggable={false} onClick={event => event.stopPropagation()}>
+        {agents.map(agent => {
+          const on = (stock.agents || []).some(item => item.agent_name === agent.name)
+          const busy = stockBusy || bulkBind?.agentName === agent.name
+          const mode = agent.execution_mode === 'batch' ? '批量分析' : '逐只分析'
+          return (
+            <button
+              key={agent.name}
+              type="button"
+              draggable={false}
+              aria-pressed={on}
+              disabled={!agent.enabled || busy || bulkBind !== null}
+              title={agent.enabled
+                ? `${agent.display_name}（${mode}）。${agent.description} 点击只切换绑定，不会立即分析。`
+                : `${agent.display_name} 在全局未启用，请先到 Agent 配置打开`}
+              onClick={() => toggleAgent(stock, agent.name)}
+              className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors disabled:opacity-50 ${
+                on
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'bg-background/40 border-border/70 text-muted-foreground hover:border-primary/40 hover:text-foreground'
+              }`}
+            >
+              {agentShortLabel(agent)}
+            </button>
+          )
+        })}
+        <button
+          type="button"
+          draggable={false}
+          className="text-[10px] px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+          title="调度、模型和手动分析"
+          onClick={() => setAgentDialogStock(stock)}
+        >
+          详细
+        </button>
+        {runningAgents[stock.id] && (
+          <span className="inline-flex items-center gap-1 text-[10px] text-amber-600">
+            <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+            {agents.find(agent => agent.name === runningAgents[stock.id])?.display_name || runningAgents[stock.id]}
+          </span>
+        )}
+      </div>
+    )
   }
 
   const positionRatio = useMemo(() => {
@@ -1495,6 +1810,7 @@ export default function StocksPage() {
               <div className="flex items-center gap-1.5">
                 <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} className="scale-90" />
                 <span className="text-[11px] text-muted-foreground">自动刷新</span>
+                {aiScanRunning && <span className="text-[10px] text-primary">AI 建议更新中</span>}
                 {autoRefresh && (
                   <Select value={refreshInterval.toString()} onValueChange={v => setRefreshInterval(parseInt(v))}>
                     <SelectTrigger className="h-6 w-14 text-[10px] px-1.5">
@@ -1742,11 +2058,37 @@ export default function StocksPage() {
           >
             关注 <span className="ml-1 font-mono text-[11px] opacity-70">{watchlistCount}</span>
           </button>
+          <button
+            onClick={() => setViewTab('groups')}
+            className={`px-3 py-1.5 rounded-md text-[12px] transition-colors ${
+              viewTab === 'groups'
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            分组
+          </button>
         </div>
       </div>
 
+      {viewTab === 'groups' && (
+        <StockGroupsPanel
+          key={groupsRefreshKey}
+          quotes={quotes}
+          onOpenStock={openStockDetail}
+          onStocksChanged={() => { load() }}
+        />
+      )}
+
       {/* Add Stock Dialog */}
-      <Dialog open={showStockForm} onOpenChange={(open) => { setShowStockForm(open); if (!open) { setSearchQuery(''); setSearchMarket('') } }}>
+      <Dialog open={showStockForm} onOpenChange={(open) => {
+        setShowStockForm(open)
+        if (!open) {
+          setSearchQuery('')
+          setSearchMarket('')
+          setSelectedGroupIds([])
+        }
+      }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>添加股票到自选</DialogTitle>
@@ -1827,6 +2169,39 @@ export default function StocksPage() {
                 <div className="mt-2.5 flex items-center gap-2">
                   <Badge><span className="font-mono">{stockForm.symbol}</span> {stockForm.name}</Badge>
                   <Badge variant="secondary">{marketLabel(stockForm.market)}</Badge>
+                </div>
+              )}
+            </div>
+            <div className="mt-4">
+              <div className="mb-2 flex items-center justify-between">
+                <Label className="mb-0">加入分组</Label>
+                <span className="text-[11px] text-muted-foreground">可多选，不选则只进关注</span>
+              </div>
+              {addStockGroupsLoading ? (
+                <div className="text-[12px] text-muted-foreground">分组加载中…</div>
+              ) : addStockGroups.length === 0 ? (
+                <div className="text-[12px] text-muted-foreground">还没有分组。先到「分组」里新建，或直接加入关注。</div>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {addStockGroups.map(group => {
+                    const selected = selectedGroupIds.includes(group.id)
+                    return (
+                      <button
+                        key={group.id}
+                        type="button"
+                        onClick={() => setSelectedGroupIds(prev => (
+                          prev.includes(group.id) ? prev.filter(id => id !== group.id) : [...prev, group.id]
+                        ))}
+                        className={`text-[12px] px-2.5 py-1 rounded-md border transition-colors ${
+                          selected
+                            ? 'bg-primary text-primary-foreground border-primary'
+                            : 'bg-accent/40 text-muted-foreground border-border/60 hover:text-foreground'
+                        }`}
+                      >
+                        {group.name}
+                      </button>
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -1993,6 +2368,7 @@ export default function StocksPage() {
                                         <span className="ml-2">
                                           <SuggestionBadge
                                             suggestion={suggestion}
+                                            jevSuggestion={getJevForStock(pos.symbol, pos.market)}
                                             stockName={pos.name}
                                             stockSymbol={pos.symbol}
                                             kline={kline}
@@ -2049,31 +2425,7 @@ export default function StocksPage() {
                                     )}
                                   </td>
                                   <td className="px-4 py-2.5">
-                                    {stock && (
-                                      <button onClick={() => setAgentDialogStock(stock)} className="flex items-center gap-1.5 hover:opacity-70 transition-opacity">
-                                        {stock.agents && stock.agents.length > 0 ? (
-                                          <div className="flex items-center gap-1.5 flex-wrap">
-                                            {stock.agents.map(sa => {
-                                              const agent = agents.find(a => a.name === sa.agent_name)
-                                              const isRunning = runningAgents[stock.id] === sa.agent_name
-                                              return (
-                                                <span key={sa.agent_name} className="inline-flex items-center gap-1">
-                                                  <Badge variant="default" className="text-[10px]">{agent?.display_name || sa.agent_name}</Badge>
-                                                  {isRunning && (
-                                                    <span className="inline-flex items-center gap-1 text-[10px] text-amber-600">
-                                                      <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
-                                                      执行中
-                                                    </span>
-                                                  )}
-                                                </span>
-                                              )
-                                            })}
-                                          </div>
-                                        ) : (
-                                          <span className="text-[11px] text-muted-foreground/50 flex items-center gap-1"><Bot className="w-3 h-3" /> 未配置</span>
-                                        )}
-                                      </button>
-                                    )}
+                                    {stock ? renderStockAgentToggles(stock) : null}
                                   </td>
                                   <td className="px-4 py-2.5 text-center">
                                     <div className="flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -2178,6 +2530,7 @@ export default function StocksPage() {
                                   <div className="mb-2">
                                     <SuggestionBadge
                                       suggestion={suggestion}
+                                      jevSuggestion={getJevForStock(pos.symbol, pos.market)}
                                       stockName={pos.name}
                                       stockSymbol={pos.symbol}
                                       kline={kline}
@@ -2216,31 +2569,9 @@ export default function StocksPage() {
                                 </div>
                               </div>
                               {/* Row 4: Actions */}
-                              <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/20">
-                                <div>
-                                  {stock && stock.agents && stock.agents.length > 0 ? (
-                                    <button onClick={() => setAgentDialogStock(stock)} className="flex items-center gap-1">
-                                      {stock.agents.slice(0, 2).map(sa => {
-                                        const agent = agents.find(a => a.name === sa.agent_name)
-                                        const isRunning = runningAgents[stock.id] === sa.agent_name
-                                        return (
-                                          <span key={sa.agent_name} className="inline-flex items-center gap-1">
-                                            <Badge variant="secondary" className="text-[9px]">{agent?.display_name || sa.agent_name}</Badge>
-                                            {isRunning && (
-                                              <span className="inline-flex items-center gap-1 text-[10px] text-amber-600">
-                                                <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
-                                                执行中
-                                              </span>
-                                            )}
-                                          </span>
-                                        )
-                                      })}
-                                    </button>
-                                  ) : (
-                                    <button onClick={() => stock && setAgentDialogStock(stock)} className="text-[10px] text-muted-foreground/50 flex items-center gap-1">
-                                      <Bot className="w-3 h-3" /> Agent
-                                    </button>
-                                  )}
+                              <div className="flex flex-wrap items-center justify-between gap-2 mt-2 pt-2 border-t border-border/20">
+                                <div className="min-w-0">
+                                  {stock ? renderStockAgentToggles(stock) : null}
                                 </div>
                                 <div className="flex items-center gap-1">
                                   {(() => { const { suggestion, kline } = getSuggestionForStock(pos.symbol, pos.market, true); return (!suggestion && !kline) ? (
@@ -2303,22 +2634,149 @@ export default function StocksPage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-[11px] text-muted-foreground">筛选</div>
-            <div className="flex items-center gap-2">
+          <div className="mb-3 space-y-2">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/60" />
+              <Input
+                value={watchlistQuery}
+                onChange={event => setWatchlistQuery(event.target.value)}
+                placeholder="按代码或名称筛选，如 600519 或 茅台"
+                className="h-8 pl-8 text-[12px]"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] text-muted-foreground mr-1">建议</span>
+              {([
+                { value: '' as const, label: '全部', always: true },
+                { value: 'buy' as const, label: suggestionActionLabels.buy, always: true },
+                { value: 'avoid' as const, label: suggestionActionLabels.avoid, always: true },
+                { value: 'watch' as const, label: suggestionActionLabels.watch, always: true },
+                { value: 'add' as const, label: suggestionActionLabels.add, always: false },
+                { value: 'sell' as const, label: suggestionActionLabels.sell, always: false },
+                { value: 'reduce' as const, label: suggestionActionLabels.reduce, always: false },
+                { value: 'hold' as const, label: suggestionActionLabels.hold, always: false },
+              ]).filter(opt => opt.always || (watchlistActionCounts[opt.value] || 0) > 0 || watchlistAction === opt.value).map(opt => {
+                const count = opt.value ? (watchlistActionCounts[opt.value] || 0) : watchlistScoped.length
+                const selected = watchlistAction === opt.value
+                return (
+                  <button
+                    key={opt.value || 'all-actions'}
+                    type="button"
+                    onClick={() => setWatchlistAction(opt.value)}
+                    className={`text-[11px] px-2 py-0.5 rounded transition-colors ${
+                      selected
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-accent/50 text-muted-foreground hover:bg-accent'
+                    }`}
+                  >
+                    {opt.label} ({count})
+                  </button>
+                )
+              })}
               <button
+                type="button"
                 onClick={() => setWatchlistOnlyAlerts(!watchlistOnlyAlerts)}
-                className={`text-[11px] px-2.5 py-1 rounded-md border transition-colors ${
+                className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
                   watchlistOnlyAlerts
                     ? 'bg-rose-500/10 border-rose-500/30 text-rose-600'
-                    : 'bg-accent/30 border-border/50 text-muted-foreground hover:border-rose-500/30'
+                    : 'bg-accent/30 border-transparent text-muted-foreground hover:bg-accent'
                 }`}
                 title="只显示需要关注/预警的股票"
               >
                 仅预警
               </button>
             </div>
+            {watchlistGroups.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-muted-foreground mr-1">分组</span>
+                <button
+                  type="button"
+                  onClick={() => setWatchlistGroupId(null)}
+                  className={`text-[11px] px-2 py-0.5 rounded transition-colors ${
+                    watchlistGroupId == null
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-accent/50 text-muted-foreground hover:bg-accent'
+                  }`}
+                >
+                  全部
+                </button>
+                {watchlistGroups.map(group => (
+                  <button
+                    key={group.id}
+                    type="button"
+                    onClick={() => setWatchlistGroupId(prev => prev === group.id ? null : group.id)}
+                    className={`text-[11px] px-2 py-0.5 rounded transition-colors ${
+                      watchlistGroupId === group.id
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-accent/50 text-muted-foreground hover:bg-accent'
+                    }`}
+                  >
+                    {group.name} ({group.stockIds.length})
+                  </button>
+                ))}
+              </div>
+            )}
+            {watchlistFilterActive && (
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span>显示 {visibleWatchStocks.length} / {stocks.length}</span>
+                <button
+                  type="button"
+                  className="hover:text-foreground"
+                  onClick={() => {
+                    setWatchlistQuery('')
+                    setWatchlistAction('')
+                    setWatchlistGroupId(null)
+                    setWatchlistOnlyAlerts(false)
+                    setStockListFilter('')
+                  }}
+                >
+                  清除筛选
+                </button>
+              </div>
+            )}
           </div>
+          {agents.length > 0 && visibleWatchStocks.length > 0 && (
+            <div className="mb-3 rounded-lg border border-border/40 bg-accent/20 px-2.5 py-2 space-y-1.5">
+              <div className="text-[11px] text-muted-foreground">
+                批量开关 · 当前 {visibleWatchStocks.length} 只。只改绑定，不会立刻分析
+                {watchlistFilterActive ? '（按当前筛选）' : ''}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {agents.map(agent => {
+                  const bound = visibleWatchStocks.filter(stock =>
+                    (stock.agents || []).some(item => item.agent_name === agent.name)
+                  ).length
+                  const total = visibleWatchStocks.length
+                  const saving = bulkBind?.agentName === agent.name
+                  const locked = bulkBind !== null || agentBindStockIds.size > 0
+                  return (
+                    <div key={agent.name} className="inline-flex items-center gap-1 rounded-md border border-border/50 bg-background/50 px-1.5 py-1">
+                      <span className="text-[11px] text-foreground">{agent.display_name}</span>
+                      <span className="font-mono text-[10px] text-muted-foreground">{bound}/{total}</span>
+                      <button
+                        type="button"
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary disabled:opacity-40"
+                        disabled={!agent.enabled || locked || bound === total}
+                        title={agent.enabled ? `为当前 ${total - bound} 只开启${agent.display_name}` : '该 Agent 在全局未启用'}
+                        onClick={() => applyBulkAgent(agent.name, true)}
+                      >
+                        {saving ? `处理中 ${bulkBind?.done ?? 0}/${bulkBind?.total ?? total}` : '全开'}
+                      </button>
+                      <button
+                        type="button"
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-accent text-muted-foreground disabled:opacity-40"
+                        disabled={!agent.enabled || locked || bound === 0}
+                        title={agent.enabled ? `为当前 ${bound} 只关闭${agent.display_name}` : '该 Agent 在全局未启用'}
+                        onClick={() => applyBulkAgent(agent.name, false)}
+                      >
+                        全关
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
           {stocks.length === 0 ? (
             <div className="py-12 text-center">
               <div className="text-[13px] text-muted-foreground">还没有添加关注股票</div>
@@ -2326,32 +2784,27 @@ export default function StocksPage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {stocks
-                .filter(s => !stockListFilter || s.market === stockListFilter)
-                .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || a.id - b.id)
-                .filter(stock => {
-                  if (!watchlistOnlyAlerts) return true
-                  const { suggestion } = getSuggestionForStock(stock.symbol, stock.market, false)
-                  return !!suggestion?.should_alert
-                })
-                .map((stock) => {
+              {visibleWatchStocks.length === 0 ? (
+                <div className="col-span-full py-10 text-center text-[13px] text-muted-foreground">没有符合筛选的股票</div>
+              ) : visibleWatchStocks.map((stock) => {
                 const quote = getStockQuote(`${stock.market}:${stock.symbol}`)
                 const changeColor = quote?.change_pct != null
                   ? (quote.change_pct > 0 ? 'text-rose-500' : quote.change_pct < 0 ? 'text-emerald-500' : 'text-muted-foreground')
                   : 'text-muted-foreground'
                 const { suggestion, kline } = getSuggestionForStock(stock.symbol, stock.market, false)
+                const jevSuggestion = getJevForStock(stock.symbol, stock.market)
                 return (
                   <div
                     key={stock.id}
-                    draggable={stockListFilter === '' && !watchlistOnlyAlerts}
+                    draggable={watchlistReorderable}
                     onDragStart={(e) => {
-                      if (stockListFilter !== '' || watchlistOnlyAlerts) return
+                      if (!watchlistReorderable) return
                       watchDragSnapshotRef.current = stocks
                       setDraggingWatchStockId(stock.id)
                       e.dataTransfer.effectAllowed = 'move'
                     }}
                     onDragOver={(e) => {
-                      if (stockListFilter !== '' || watchlistOnlyAlerts) return
+                      if (!watchlistReorderable) return
                       e.preventDefault()
                       e.dataTransfer.dropEffect = 'move'
                       if (draggingWatchStockId != null) {
@@ -2359,7 +2812,7 @@ export default function StocksPage() {
                       }
                     }}
                     onDrop={(e) => {
-                      if (stockListFilter !== '' || watchlistOnlyAlerts) return
+                      if (!watchlistReorderable) return
                       e.preventDefault()
                       if (draggingWatchStockId != null) commitWatchlistReorder()
                       setDraggingWatchStockId(null)
@@ -2369,11 +2822,7 @@ export default function StocksPage() {
                       setDraggingWatchStockId(null)
                       watchDragSnapshotRef.current = null
                     }}
-                    className={`group rounded-xl border border-border/40 bg-background/30 hover:bg-accent/20 transition-colors p-3 cursor-pointer ${draggingWatchStockId === stock.id ? 'opacity-60' : ''}`}
-                    onClick={() => {
-                      if (isSuppressCardClick()) return
-                      setAgentDialogStock(stock)
-                    }}
+                    className={`group rounded-xl border border-border/40 bg-background/30 hover:bg-accent/20 transition-colors p-3 ${draggingWatchStockId === stock.id ? 'opacity-60' : ''}`}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -2406,9 +2855,10 @@ export default function StocksPage() {
                     </div>
 
                     <div className="mt-2">
-                      {(suggestion || kline) ? (
+                      {(suggestion || kline || jevSuggestion) ? (
                         <SuggestionBadge
                           suggestion={suggestion}
+                          jevSuggestion={jevSuggestion}
                           stockName={stock.name}
                           stockSymbol={stock.symbol}
                           kline={kline}
@@ -2420,24 +2870,9 @@ export default function StocksPage() {
                       )}
                     </div>
 
-                    <div className="mt-2 pt-2 border-t border-border/30 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1 flex-wrap">
-                        {stock.agents && stock.agents.length > 0 ? (
-                          <Badge variant="secondary" className="text-[10px]">{stock.agents.length} Agent</Badge>
-                        ) : (
-                          <span className="text-[10px] text-muted-foreground/60">未配置 Agent</span>
-                        )}
-                        {runningAgents[stock.id] && (
-                          <span className="inline-flex items-center gap-1 text-[10px] text-amber-600">
-                            <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
-                            {agents.find(a => a.name === runningAgents[stock.id])?.display_name || runningAgents[stock.id]}
-                          </span>
-                        )}
-                      </div>
-                      <div
-                        className="flex items-center gap-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
-                        onClick={(e) => e.stopPropagation()}
-                      >
+                    <div className="mt-2 pt-2 border-t border-border/30 space-y-2">
+                      {renderStockAgentToggles(stock)}
+                      <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                         <Button
                           variant="ghost"
                           size="icon"
@@ -2782,7 +3217,7 @@ export default function StocksPage() {
           <DialogHeader>
             <DialogTitle>配置监控 Agent</DialogTitle>
             <DialogDescription>
-              为 {agentDialogStock?.name}（{agentDialogStock?.symbol}）选择要监控的 Agent
+              为 {agentDialogStock?.name}（{agentDialogStock?.symbol}）调整调度、模型和手动分析。关注卡片上也可以直接开关绑定。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 mt-2">
@@ -3066,6 +3501,16 @@ export default function StocksPage() {
                           {item.importance >= 2 && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500">
                               重要
+                            </span>
+                          )}
+                          {item.sentiment === 'positive' && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500">
+                              利好
+                            </span>
+                          )}
+                          {item.sentiment === 'negative' && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                              利空
                             </span>
                           )}
                           <span className="text-[10px] text-muted-foreground">

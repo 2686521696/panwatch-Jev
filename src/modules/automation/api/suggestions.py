@@ -44,6 +44,7 @@ def get_all_latest_suggestions(
         None, description="市场+代码列表，格式 CN:600519,HK:00700,US:AAPL"
     ),
     include_expired: bool = Query(False, description="是否包含已过期建议"),
+    agent_name: str = Query("", description="只取该来源的最新建议，例如 jev_direction"),
     db: Session = Depends(get_db),
 ):
     """
@@ -77,6 +78,7 @@ def get_all_latest_suggestions(
         stock_symbols=symbol_list,
         stock_keys=key_list,
         include_expired=include_expired,
+        agent_name=(agent_name or "").strip() or None,
     )
     return suggestions
 

@@ -197,6 +197,10 @@ class DataCollectorManager:
         try:
             collector = NewsCollector.from_database()
             news_list = await collector.fetch_all(symbols=symbols, since_hours=hours)
+            from src.modules.market.news_ranker import enhance_newsitem_objects
+
+            hint = symbols[0] if len(symbols) == 1 else ""
+            news_list = enhance_newsitem_objects(news_list, symbol=hint)
 
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             self._log(

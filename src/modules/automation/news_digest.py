@@ -138,6 +138,9 @@ class NewsDigestAgent(BaseAgent):
 
         # 跨次去重：只保留“新新闻”，避免 agent 看起来一直在重复同样内容
         news_list = self._dedupe_with_db(news_list)
+        from src.modules.market.news_ranker import enhance_newsitem_objects
+
+        news_list = enhance_newsitem_objects(news_list)
 
         # 分类：自选股相关 + 重要市场新闻
         related_news = self._filter_related_news(news_list, symbols)

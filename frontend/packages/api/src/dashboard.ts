@@ -214,6 +214,8 @@ export interface DashboardOverviewResponse {
   market_pulse: {
     hot_stocks: DashboardMarketStock[]
     hot_topics: DashboardTopicItem[]
+    topic_summary?: string
+    topic_sentiment?: string
   }
   strategy: {
     coverage: Record<string, any>

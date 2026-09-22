@@ -39,13 +39,15 @@ PanWatch/
 ## 开发环境
 
 ```bash
-# 后端
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+# 整套起停（后端 :8000 + 前端 :5183）
+make all          # Windows 也可 .\all.cmd 或 pnpm all
+make stop         # Windows 也可 .\stop.cmd 或 pnpm stop
+
+# 或分开起
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt   # Windows: .venv\Scripts\python.exe
 python server.py
 
-# 前端
 cd frontend
 pnpm install
 pnpm dev

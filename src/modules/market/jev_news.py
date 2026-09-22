@@ -210,3 +210,93 @@ def batch_sentiment(items: list[dict]) -> dict:
 
 def enabled() -> bool:
     return _enabled()
+
+
+# ----------------------------------------------------------------- 卡片方向
+# 只回答买入 / 观望 / 回避。这不是盘中监测的操作建议。
+DIRECTION_AGENT = "jev_direction"
+_DIRECTION_CRITERIA = {
+    "buy": "结合涨跌、技术摘要和新闻，当前更适合买入。",
+    "watch": "信息不足、多空相抵，或波动仍像常态，建议观望。",
+    "avoid": "新闻或技术摘要对持股人明显不利，当前更适合回避。",
+}
+_DIRECTION_LABELS = {"buy": "买入", "watch": "观望", "avoid": "回避"}
+_DIRECTION_BATCH = 40
+
+
+def _build_choice(instructions: str, criteria: dict):
+    from typesafe_sdk import Choice
+    return Choice(instructions=instructions, criteria=criteria)
+
+
+def judge_directions(briefs: list[dict]) -> dict[str, dict]:
+    """给每只股票一个方向，失败时返回空，调用方继续用盘中监测。
+
+    brief: symbol, name, change_pct, technical, headlines(list[str])
+    返回 {symbol: {action, action_label, reason}}
+    """
+    if not briefs or not _enabled():
+        return {}
+    pending = [b for b in briefs if str(b.get("symbol") or "").strip()][:120]
+    if not pending:
+        return {}
+    client = _client()
+    if client is None:
+        return {}
+
+    try:
+        questions = {}
+        for index, brief in enumerate(pending):
+            change = brief.get("change_pct")
+            change_text = "未知" if change is None else f"{float(change):+.2f}%"
+            headlines = [str(title).strip() for title in (brief.get("headlines") or []) if str(title).strip()]
+            news_text = "；".join(headlines[:3]) or "无"
+            questions[f"d{index}"] = _build_choice(
+                instructions=(
+                    f"股票 {brief.get('name') or brief.get('symbol')}（{brief.get('symbol')}）"
+                    f"今日涨跌 {change_text}。\n"
+                    f"技术摘要：{brief.get('technical') or '无'}\n"
+                    f"近期新闻：{news_text}\n"
+                    "只判断方向，不要给出仓位或买卖时点。"
+                ),
+                criteria=_DIRECTION_CRITERIA,
+            )
+        chosen = {}
+        with client:
+            for start in range(0, len(pending), _DIRECTION_BATCH):
+                batch_keys = [f"d{index}" for index in range(start, min(start + _DIRECTION_BATCH, len(pending)))]
+                result = client.system_one(
+                    state={"说明": "根据涨跌、技术摘要和新闻，判断买入、观望还是回避"},
+                    model=MODEL,
+                    questions={key: questions[key] for key in batch_keys},
+                )
+                for key in batch_keys:
+                    chosen[key] = result.choices[key]
+    except Exception as e:
+        log.warning("Jev 方向判断失败，卡片继续用盘中监测: %s", e)
+        return {}
+
+    out: dict[str, dict] = {}
+    for index, brief in enumerate(pending):
+        answer = chosen.get(f"d{index}")
+        if answer is None:
+            continue
+        raw = str(getattr(answer, "choice", "") or "").strip().lower()
+        action = raw if raw in _DIRECTION_LABELS else "watch"
+        raw_confidence = getattr(answer, "confidence", None)
+        confidence = 1.0 if raw_confidence is None else float(raw_confidence)
+        if confidence < 0.50:
+            action = "watch"
+        change = brief.get("change_pct")
+        change_text = "涨跌未知" if change is None else f"涨跌 {float(change):+.2f}%"
+        headlines = [str(title).strip() for title in (brief.get("headlines") or []) if str(title).strip()]
+        reason = f"{change_text}。技术：{brief.get('technical') or '无'}。新闻：{'；'.join(headlines[:2]) or '无'}"
+        if confidence < 0.50:
+            reason = f"置信度不足，暂作观望。{reason}"
+        out[str(brief["symbol"])] = {
+            "action": action,
+            "action_label": _DIRECTION_LABELS[action],
+            "reason": reason[:160],
+        }
+    log.info("[JEV] direction %d -> %d", len(pending), len(out))
+    return out

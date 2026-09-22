@@ -172,7 +172,11 @@ docker-compose up -d
 **环境要求**：Python 3.10+ / Node.js 18+ / pnpm
 
 ```bash
-# 一键开发（推荐）
+# 一键起停整套（后端 :8000 + 前端 :5183）
+make all              # 或 pnpm all / .\all.cmd
+make stop             # 或 pnpm stop / .\stop.cmd
+
+# 也可以分开起
 make dev-api          # 启动后端（自动 venv+依赖，监听 :8000）
 make dev-web          # 启动前端（自动 pnpm install，监听 :5183）
 

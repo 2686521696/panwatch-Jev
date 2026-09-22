@@ -8,15 +8,16 @@ export type SuggestionAction =
   | 'alert'
   | 'avoid'
 
+// 和行情同一套：红 = 做多，绿 = 回避/卖出。买入和回避不能再都用实心红。
 export const suggestionActionColors: Record<SuggestionAction, string> = {
-  buy: 'bg-rose-500 text-white',
-  add: 'bg-rose-400 text-white',
-  reduce: 'bg-emerald-500 text-white',
-  sell: 'bg-emerald-600 text-white',
-  hold: 'bg-amber-500 text-white',
-  watch: 'bg-slate-500 text-white',
-  alert: 'bg-blue-500 text-white',
-  avoid: 'bg-red-600 text-white',
+  buy: 'bg-rose-600 text-white',
+  add: 'bg-rose-500/15 text-rose-700 ring-1 ring-rose-500/40',
+  reduce: 'bg-emerald-500/15 text-emerald-700 ring-1 ring-emerald-500/40',
+  sell: 'bg-emerald-800 text-white',
+  hold: 'bg-amber-500/15 text-amber-800 ring-1 ring-amber-500/40',
+  watch: 'bg-slate-500/10 text-slate-600 ring-1 ring-slate-400/50',
+  alert: 'bg-sky-600 text-white',
+  avoid: 'bg-emerald-600 text-white',
 }
 
 export const suggestionActionLabels: Record<SuggestionAction, string> = {

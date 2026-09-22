@@ -85,9 +85,10 @@ def _group_signals(items: list[dict]) -> list[dict]:
     return list(grouped.values())
 
 
-def _summarize_topics(raw_topics) -> list[dict]:
+def _summarize_topics(raw_topics, default_sentiment: str = "neutral") -> list[dict]:
     out: list[dict] = []
     topics = raw_topics if isinstance(raw_topics, list) else []
+    fallback = default_sentiment or "neutral"
     for item in topics:
         if isinstance(item, dict):
             name = str(item.get("topic") or item.get("name") or "").strip()
@@ -97,13 +98,13 @@ def _summarize_topics(raw_topics) -> list[dict]:
                 {
                     "name": name,
                     "score": float(item.get("score") or 0.0),
-                    "sentiment": str(item.get("sentiment") or "neutral"),
+                    "sentiment": str(item.get("sentiment") or fallback),
                 }
             )
         elif isinstance(item, str):
             text = item.strip()
             if text:
-                out.append({"name": text, "score": 0.0, "sentiment": "neutral"})
+                out.append({"name": text, "score": 0.0, "sentiment": fallback})
         if len(out) >= 8:
             break
     return out
@@ -297,7 +298,14 @@ def get_dashboard_overview(
         .order_by(NewsTopicSnapshot.snapshot_date.desc(), NewsTopicSnapshot.id.desc())
         .first()
     )
-    hot_topics = _summarize_topics(latest_topic.topics if latest_topic else [])
+    topic_sentiment = (
+        str(latest_topic.sentiment or "neutral") if latest_topic else "neutral"
+    )
+    hot_topics = _summarize_topics(
+        latest_topic.topics if latest_topic else [],
+        default_sentiment=topic_sentiment,
+    )
+    topic_summary = str(latest_topic.summary or "") if latest_topic else ""
 
     # 3-day strategy win rate.
     rows_3d = [
@@ -378,6 +386,8 @@ def get_dashboard_overview(
         "market_pulse": {
             "hot_stocks": hot_stocks,
             "hot_topics": hot_topics,
+            "topic_summary": topic_summary,
+            "topic_sentiment": topic_sentiment,
         },
         "strategy": {
             "coverage": stats.get("coverage") or {},

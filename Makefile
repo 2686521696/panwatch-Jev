@@ -1,4 +1,4 @@
-.PHONY: help setup-backend dev-api dev-web build test test-notify eval doctor install-hooks clean-venv
+.PHONY: help setup-backend dev-api dev-web all stop build test test-notify eval doctor install-hooks clean-venv
 
 # 端口约定：
 #   - 后端：:8000（Docker / 本地 dev 统一，避免存量用户升级困惑）
@@ -23,8 +23,10 @@ endif
 help:
 	@echo "PanWatch 开发命令:"
 	@echo "  make setup-backend   创建 venv 并安装后端依赖"
-	@echo "  make dev-api         启动后端（:8000，自动 setup-backend）"
-	@echo "  make dev-web         启动前端（:5183，自动 pnpm install）"
+	@echo "  make all             同时启动后端 :8000 和前端 :5183（Ctrl+C 一起停）"
+	@echo "  make stop            停掉 all 拉起的进程，并清 :8000 / :5183"
+	@echo "  make dev-api         只启动后端（:8000，自动 setup-backend）"
+	@echo "  make dev-web         只启动前端（:5183，自动 pnpm install）"
 	@echo "  make test            跑全部单测（默认不发通知）"
 	@echo "  make test-notify     跑全部单测（实际发送通知）"
 	@echo "  make eval            跑 Agent 过程评测集（chat 用例需 EVAL_AI_* 环境变量）"
@@ -66,6 +68,13 @@ else
 	fi
 	cd frontend && pnpm install --no-frozen-lockfile && pnpm dev
 endif
+
+# 一条命令拉起 / 停下整套本地开发栈。Windows 也可直接跑仓库根目录的 all.cmd / stop.cmd。
+all:
+	node scripts/dev-all.mjs
+
+stop:
+	node scripts/dev-stop.mjs
 
 test:
 	@$(VENV_PYTHON) -m pytest tests/ -v
