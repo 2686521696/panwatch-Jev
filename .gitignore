@@ -31,3 +31,7 @@ CLAUDE.md
 docs/superpowers/
 .superpowers/
 .worktrees/
+
+# CodeGraph 本地索引与可视化产物
+.codegraph/
+codegraph.html
