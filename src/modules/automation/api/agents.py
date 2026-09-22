@@ -860,6 +860,76 @@ def get_agent_history(agent_name: str, limit: int = 20, db: Session = Depends(ge
     ]
 
 
+def _news_titles(pack) -> list[str]:
+    news = getattr(pack, "news", None)
+    items = list(getattr(news, "items", None) or [])
+    titles: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            title = str(item.get("title") or "")
+        else:
+            title = str(getattr(item, "title", "") or "")
+        title = title.strip()
+        if not title:
+            continue
+        titles.append(title[:48])
+        if len(titles) >= 3:
+            break
+    return titles
+
+
+def _technical_line(kline) -> str:
+    if not isinstance(kline, dict):
+        return "无"
+    parts = [str(kline.get(key)) for key in ("trend", "macd_status", "rsi_status") if kline.get(key)]
+    return " / ".join(parts)[:80] or "无"
+
+
+async def _save_jev_directions(results: list[dict], signal_packs: dict) -> None:
+    """扫描结束后让 Jev 给方向。失败只记日志，不改盘中监测已经写好的建议。"""
+    from src.modules.market.jev_news import DIRECTION_AGENT, enabled as jev_enabled, judge_directions
+    from src.modules.automation.suggestion_pool import save_suggestion
+
+    if not jev_enabled():
+        return
+    briefs = []
+    for item in results:
+        symbol = str(item.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        briefs.append({
+            "symbol": symbol,
+            "name": item.get("name") or symbol,
+            "change_pct": item.get("change_pct"),
+            "technical": _technical_line(item.get("kline")),
+            "headlines": _news_titles(signal_packs.get(symbol)),
+        })
+    if not briefs:
+        return
+    try:
+        judged = await asyncio.to_thread(judge_directions, briefs)
+    except Exception as e:
+        logger.warning(f"Jev 方向判断失败: {e}")
+        return
+    for item in results:
+        row = judged.get(str(item.get("symbol") or ""))
+        if not row:
+            continue
+        save_suggestion(
+            stock_symbol=item["symbol"],
+            stock_name=item.get("name") or "",
+            action=row["action"],
+            action_label=row["action_label"],
+            signal="Jev方向",
+            reason=row.get("reason") or "",
+            agent_name=DIRECTION_AGENT,
+            agent_label="Jev",
+            expires_hours=6,
+            stock_market=item.get("market") or "CN",
+            meta={"source": "jev_direction"},
+        )
+
+
 @router.post("/intraday/scan")
 async def scan_intraday(
     analyze: bool = False,
@@ -1204,6 +1274,8 @@ async def scan_intraday(
 
         except Exception as e:
             logger.error(f"构建 Agent 上下文失败: {e}")
+
+        await _save_jev_directions(results, signal_packs)
 
     payload = {
         "stocks": results,

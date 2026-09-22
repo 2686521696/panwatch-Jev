@@ -389,6 +389,7 @@ export default function StocksPage() {
   const [suggestions] = useState<Record<string, StockSuggestionData>>({})
   // 建议池建议（来自 /suggestions API）
   const [poolSuggestions, setPoolSuggestions] = useState<Record<string, PoolSuggestion>>({})
+  const [jevSuggestions, setJevSuggestions] = useState<Record<string, PoolSuggestion>>({})
   const [poolSuggestionsLoading, setPoolSuggestionsLoading] = useState(false)
   const [aiScanRunning, setAiScanRunning] = useState(false)
   const aiScanInFlight = useRef(false)
@@ -768,6 +769,18 @@ export default function StocksPage() {
     try {
       const data = await fetchAPI<Record<string, PoolSuggestion>>('/suggestions?include_expired=true')
       setPoolSuggestions(data)
+      try {
+        const jev = await fetchAPI<Record<string, PoolSuggestion>>(
+          '/suggestions?include_expired=true&agent_name=jev_direction',
+        )
+        const onlyJev: Record<string, PoolSuggestion> = {}
+        for (const [key, row] of Object.entries(jev || {})) {
+          if (row?.agent_name === 'jev_direction') onlyJev[key] = row
+        }
+        setJevSuggestions(onlyJev)
+      } catch (e) {
+        console.warn('加载 Jev 方向失败:', e)
+      }
     } catch (e) {
       console.warn('加载建议池失败:', e)
     } finally {
@@ -1494,36 +1507,46 @@ export default function StocksPage() {
     return priceAlertSummaryMap[key] || { total: 0, enabled: 0 }
   }
 
+  const lookupPool = (table: Record<string, PoolSuggestion>, symbol: string, market: string): PoolSuggestion | null => {
+    const key = `${market || 'CN'}:${symbol}`
+    const direct = table[key]
+    if (direct) return direct
+    const fallback = table[symbol]
+    if (!fallback) return null
+    const fallbackMarket = String(fallback.stock_market || '').toUpperCase()
+    return fallbackMarket && fallbackMarket !== String(market || 'CN').toUpperCase() ? null : fallback
+  }
+
+  const toSuggestionInfo = (poolSug: PoolSuggestion): SuggestionInfo => ({
+    id: poolSug.id,
+    action: poolSug.action,
+    action_label: poolSug.action_label,
+    signal: poolSug.signal,
+    reason: poolSug.reason,
+    should_alert: poolSug.should_alert ?? (['alert', 'avoid', 'sell', 'reduce'].includes(poolSug.action)),
+    agent_name: poolSug.agent_name,
+    agent_label: poolSug.agent_label,
+    created_at: poolSug.created_at,
+    is_expired: poolSug.is_expired,
+    prompt_context: poolSug.prompt_context,
+    ai_response: poolSug.ai_response,
+    meta: poolSug.meta,
+  })
+
+  const getJevForStock = (symbol: string, market: string): SuggestionInfo | null => {
+    const row = lookupPool(jevSuggestions, symbol, market)
+    return row ? toSuggestionInfo(row) : null
+  }
+
   // 获取股票的建议信息（优先使用建议池，包含来源和时间信息）
   const getSuggestionForStock = (symbol: string, market: string, hasPosition?: boolean): { suggestion: SuggestionInfo | null; kline: KlineSummary | null } => {
     const key = `${market || 'CN'}:${symbol}`
-    // 优先使用建议池的建议（包含来源和时间信息）
-    const poolSug =
-      poolSuggestions[key] ||
-      (() => {
-        const fallback = poolSuggestions[symbol]
-        if (!fallback) return null
-        const fm = String(fallback.stock_market || '').toUpperCase()
-        return fm && fm !== String(market || 'CN').toUpperCase() ? null : fallback
-      })()
+    // 优先使用建议池的建议（包含来源和时间信息）。Jev 方向另存，不占用这条。
+    const poolSug = lookupPool(poolSuggestions, symbol, market)
     if (poolSug) {
       const preloadedKline = klineSummaries[key] || (suggestions[symbol]?.kline as any) || null
       return {
-        suggestion: {
-          id: poolSug.id,
-          action: poolSug.action,
-          action_label: poolSug.action_label,
-          signal: poolSug.signal,
-          reason: poolSug.reason,
-          should_alert: poolSug.should_alert ?? (['alert', 'avoid', 'sell', 'reduce'].includes(poolSug.action)),
-          agent_name: poolSug.agent_name,
-          agent_label: poolSug.agent_label,
-          created_at: poolSug.created_at,
-          is_expired: poolSug.is_expired,
-          prompt_context: poolSug.prompt_context,
-          ai_response: poolSug.ai_response,
-          meta: poolSug.meta,
-        },
+        suggestion: toSuggestionInfo(poolSug),
         // 优先使用本页并发预取的 kline 摘要，确保徽章与弹窗一致且免加载
         kline: preloadedKline,
       }
@@ -1557,6 +1580,8 @@ export default function StocksPage() {
       if (normalized) found.add(normalized)
     }
     if (suggestion) add(suggestion.action, suggestion.action_label)
+    const jev = getJevForStock(stock.symbol, stock.market)
+    if (jev) add(jev.action, jev.action_label)
     if (kline) {
       const tech = buildKlineSuggestion(kline as any, false)
       add(tech.action, tech.action_label)
@@ -2343,6 +2368,7 @@ export default function StocksPage() {
                                         <span className="ml-2">
                                           <SuggestionBadge
                                             suggestion={suggestion}
+                                            jevSuggestion={getJevForStock(pos.symbol, pos.market)}
                                             stockName={pos.name}
                                             stockSymbol={pos.symbol}
                                             kline={kline}
@@ -2504,6 +2530,7 @@ export default function StocksPage() {
                                   <div className="mb-2">
                                     <SuggestionBadge
                                       suggestion={suggestion}
+                                      jevSuggestion={getJevForStock(pos.symbol, pos.market)}
                                       stockName={pos.name}
                                       stockSymbol={pos.symbol}
                                       kline={kline}
@@ -2765,6 +2792,7 @@ export default function StocksPage() {
                   ? (quote.change_pct > 0 ? 'text-rose-500' : quote.change_pct < 0 ? 'text-emerald-500' : 'text-muted-foreground')
                   : 'text-muted-foreground'
                 const { suggestion, kline } = getSuggestionForStock(stock.symbol, stock.market, false)
+                const jevSuggestion = getJevForStock(stock.symbol, stock.market)
                 return (
                   <div
                     key={stock.id}
@@ -2827,9 +2855,10 @@ export default function StocksPage() {
                     </div>
 
                     <div className="mt-2">
-                      {(suggestion || kline) ? (
+                      {(suggestion || kline || jevSuggestion) ? (
                         <SuggestionBadge
                           suggestion={suggestion}
+                          jevSuggestion={jevSuggestion}
                           stockName={stock.name}
                           stockSymbol={stock.symbol}
                           kline={kline}

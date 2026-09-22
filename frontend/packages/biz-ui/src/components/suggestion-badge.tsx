@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type MouseEvent } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@panwatch/base-ui/components/ui/dialog'
 import { KlineSummaryDialog } from '@panwatch/biz-ui/components/kline-summary-dialog'
 import { KlineIndicators } from '@panwatch/biz-ui/components/kline-indicators'
@@ -6,7 +6,9 @@ import { buildKlineSuggestion } from '@/lib/kline-scorer'
 import { fetchAPI } from '@panwatch/api'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import { AiSuggestionBadge } from '@panwatch/biz-ui/components/ai-suggestion-badge'
+import { BadgeChip } from '@panwatch/biz-ui/components/badge-chip'
 import { TechnicalBadge, technicalToneFromSuggestionAction } from '@panwatch/biz-ui/components/technical-badge'
+import { resolveSuggestionColorClass } from '@panwatch/biz-ui/components/suggestion-action'
 
 export interface SuggestionInfo {
   id?: number
@@ -75,6 +77,7 @@ export interface KlineSummary {
 
 interface SuggestionBadgeProps {
   suggestion: SuggestionInfo | null
+  jevSuggestion?: SuggestionInfo | null
   stockName?: string
   stockSymbol?: string
   kline?: KlineSummary | null
@@ -130,8 +133,47 @@ function formatKlineMeta(meta?: Record<string, any>): string {
   return parts.join(' · ')
 }
 
+function JevDirectionBadge({ jev, onClick }: { jev: SuggestionInfo; onClick: (event: MouseEvent<HTMLButtonElement>) => void }) {
+  const label = jev.action_label || '观望'
+  return (
+    <BadgeChip
+      label={`Jev ${label}`}
+      size="md"
+      title={jev.reason || 'Jev 方向：新闻和简要行情，不是盘中操作建议'}
+      onClick={onClick}
+      className={`${resolveSuggestionColorClass(jev.action, jev.action_label)} ${jev.is_expired ? 'opacity-50' : ''}`}
+    />
+  )
+}
+
+function JevDirectionDialog({
+  open,
+  onOpenChange,
+  jev,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  jev: SuggestionInfo | null
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md" onClick={(event) => event.stopPropagation()}>
+        <DialogHeader>
+          <DialogTitle>Jev 方向{jev?.action_label ? `：${jev.action_label}` : ''}</DialogTitle>
+        </DialogHeader>
+        <p className="text-[13px] text-foreground leading-relaxed">{jev?.reason || '没有更多说明'}</p>
+        <p className="text-[11px] text-muted-foreground">
+          这是结合涨跌、技术摘要和新闻后的方向，不是盘中监测的操作建议。
+          {jev?.is_expired ? ' 这条已过期。' : ''}
+        </p>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function SuggestionBadge({
   suggestion,
+  jevSuggestion = null,
   stockName,
   stockSymbol,
   kline,
@@ -141,6 +183,7 @@ export function SuggestionBadge({
   showTechnicalCompanion = true,
 }: SuggestionBadgeProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [jevDialogOpen, setJevDialogOpen] = useState(false)
   const [klineDialogOpen, setKlineDialogOpen] = useState(false)
   const [feedback, setFeedback] = useState<'useful' | 'useless' | null>(null)
   const { toast } = useToast()
@@ -175,11 +218,21 @@ export function SuggestionBadge({
     }
   }
 
-  if (!suggestion && !kline) return null
+  if (!suggestion && !kline && !jevSuggestion) return null
 
   // Dashboard 模式：行内显示完整信息（仅建议 badge）
   if (showFullInline) {
-    if (!suggestion) return null
+    if (!suggestion && !jevSuggestion) return null
+    if (!suggestion) {
+      return (
+        <>
+          <div className="pt-3 border-t border-border/30">
+            <JevDirectionBadge jev={jevSuggestion!} onClick={(event) => { event.stopPropagation(); setJevDialogOpen(true) }} />
+          </div>
+          <JevDirectionDialog open={jevDialogOpen} onOpenChange={setJevDialogOpen} jev={jevSuggestion} />
+        </>
+      )
+    }
     const isAI = !!suggestion.agent_name && suggestion.agent_label !== '技术指标'
     const tech = kline ? buildKlineSuggestion(kline as any, hasPosition) : null
     const timeStr = formatSuggestionTime(suggestion.created_at)
@@ -210,6 +263,9 @@ export function SuggestionBadge({
                   onClick={(e) => { e.stopPropagation(); setKlineDialogOpen(true) }}
                   title="点击查看技术面详情"
                 />
+              )}
+              {jevSuggestion && (
+                <JevDirectionBadge jev={jevSuggestion} onClick={(event) => { event.stopPropagation(); setJevDialogOpen(true) }} />
               )}
             </div>
             <div className="flex-1 min-w-0">
@@ -366,6 +422,7 @@ export function SuggestionBadge({
           hasPosition={hasPosition}
           initialSummary={kline as any}
         />
+        <JevDirectionDialog open={jevDialogOpen} onOpenChange={setJevDialogOpen} jev={jevSuggestion} />
       </>
     )
   }
@@ -375,17 +432,23 @@ export function SuggestionBadge({
     return (
       <>
         <div className="inline-flex flex-col items-start gap-0.5">
-          <TechnicalBadge
-            label="指标"
-            tone="neutral"
-            size="xs"
-            onClick={(e) => {
-              e.stopPropagation()
-              setKlineDialogOpen(true)
-            }}
-            title="点击查看技术指标"
-          />
+          <div className="inline-flex items-center gap-1">
+            <TechnicalBadge
+              label="指标"
+              tone="neutral"
+              size="xs"
+              onClick={(e) => {
+                e.stopPropagation()
+                setKlineDialogOpen(true)
+              }}
+              title="点击查看技术指标"
+            />
+            {jevSuggestion && (
+              <JevDirectionBadge jev={jevSuggestion} onClick={(event) => { event.stopPropagation(); setJevDialogOpen(true) }} />
+            )}
+          </div>
         </div>
+        <JevDirectionDialog open={jevDialogOpen} onOpenChange={setJevDialogOpen} jev={jevSuggestion} />
 
         <KlineSummaryDialog
           open={klineDialogOpen}
@@ -400,7 +463,15 @@ export function SuggestionBadge({
     )
   }
 
-  if (!suggestion) return null
+  if (!suggestion) {
+    if (!jevSuggestion) return null
+    return (
+      <>
+        <JevDirectionBadge jev={jevSuggestion} onClick={(event) => { event.stopPropagation(); setJevDialogOpen(true) }} />
+        <JevDirectionDialog open={jevDialogOpen} onOpenChange={setJevDialogOpen} jev={jevSuggestion} />
+      </>
+    )
+  }
   const isAI = !!suggestion.agent_name && suggestion.agent_label !== '技术指标'
 
   // 持仓页模式：小徽章 + 点击弹窗
@@ -437,6 +508,9 @@ export function SuggestionBadge({
                 />
               )
             })()
+          )}
+          {jevSuggestion && (
+            <JevDirectionBadge jev={jevSuggestion} onClick={(event) => { event.stopPropagation(); setJevDialogOpen(true) }} />
           )}
         </div>
         {/* 来源和时间（显示在徽章下方，仅 AI 建议以增强区分）*/}
@@ -575,6 +649,7 @@ export function SuggestionBadge({
         hasPosition={hasPosition}
         initialSummary={kline as any}
       />
+      <JevDirectionDialog open={jevDialogOpen} onOpenChange={setJevDialogOpen} jev={jevSuggestion} />
     </>
   )
 }

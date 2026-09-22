@@ -21,7 +21,7 @@ def _norm_text(s: str) -> str:
 def _dedupe_window_minutes(agent_name: str) -> int:
     # Default: keep the suggestion list stable and avoid repeated rows.
     # Intraday runs frequently; other agents run a few times a day.
-    if agent_name == "intraday_monitor":
+    if agent_name in ("intraday_monitor", "jev_direction"):
         return 30
     if agent_name == "news_digest":
         return 60
@@ -32,6 +32,7 @@ def _dedupe_window_minutes(agent_name: str) -> int:
 AGENT_EXPIRY_HOURS = {
     "premarket_outlook": 12,  # 盘前建议当日有效（约12小时）
     "intraday_monitor": 6,  # 盘中建议6小时有效
+    "jev_direction": 6,  # Jev 方向与盘中建议同一有效期
     "daily_report": 16,  # 盘后建议隔夜有效（到次日开盘，约16小时）
     "news_digest": 12,  # 新闻速递建议半天有效
 }
@@ -40,6 +41,7 @@ AGENT_EXPIRY_HOURS = {
 AGENT_LABELS = {
     "premarket_outlook": "盘前分析",
     "intraday_monitor": "盘中监测",
+    "jev_direction": "Jev",
     "daily_report": "收盘复盘",
     "news_digest": "新闻速递",
 }
@@ -241,6 +243,7 @@ def get_latest_suggestions(
     stock_symbols: Optional[list[str]] = None,
     stock_keys: Optional[list[tuple[str, str]]] = None,
     include_expired: bool = False,
+    agent_name: str | None = None,
 ) -> dict[str, dict]:
     """
     获取所有股票的最新建议（每只股票只返回最新的一条）
@@ -254,15 +257,19 @@ def get_latest_suggestions(
     """
     db = SessionLocal()
     try:
-        subquery = (
-            db.query(
-                StockSuggestion.stock_symbol,
-                StockSuggestion.stock_market,
-                func.max(StockSuggestion.id).label("max_id"),
-            )
-            .group_by(StockSuggestion.stock_symbol, StockSuggestion.stock_market)
-            .subquery()
+        grouped = db.query(
+            StockSuggestion.stock_symbol,
+            StockSuggestion.stock_market,
+            func.max(StockSuggestion.id).label("max_id"),
         )
+        # Jev 方向单独取，避免盖住盘中监测那条最新建议。
+        if agent_name:
+            grouped = grouped.filter(StockSuggestion.agent_name == agent_name)
+        else:
+            grouped = grouped.filter(StockSuggestion.agent_name != "jev_direction")
+        subquery = grouped.group_by(
+            StockSuggestion.stock_symbol, StockSuggestion.stock_market
+        ).subquery()
 
         query = db.query(StockSuggestion).join(
             subquery,
