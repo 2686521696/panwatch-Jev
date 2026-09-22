@@ -1917,6 +1917,39 @@ def _m125_assistant_task_protocol(conn: Connection) -> None:
     )
 
 
+def _m127_stock_groups(conn: Connection) -> None:
+    """自选分组：一只股票可属于多个板块。"""
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS stock_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            sort_order INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS stock_group_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            stock_id INTEGER NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(group_id, stock_id)
+        )
+    """))
+    _create_index_if_missing(
+        conn,
+        "ix_stock_group_members_group",
+        "CREATE INDEX ix_stock_group_members_group ON stock_group_members(group_id, sort_order)",
+    )
+    _create_index_if_missing(
+        conn,
+        "ix_stock_group_members_stock",
+        "CREATE INDEX ix_stock_group_members_stock ON stock_group_members(stock_id)",
+    )
+
+
 def _m126_assistant_task_events(conn: Connection) -> None:
     """Persist replayable facts independently from the SSE connection."""
     _add_column_if_missing(
@@ -1992,6 +2025,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(124, "assistant_context_snapshots", _m124_assistant_context_snapshots),
     Migration(125, "assistant_task_protocol", _m125_assistant_task_protocol),
     Migration(126, "assistant_task_events", _m126_assistant_task_events),
+    Migration(127, "stock_groups", _m127_stock_groups),
 )
 
 

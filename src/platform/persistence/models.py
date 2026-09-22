@@ -100,6 +100,48 @@ class Stock(Base):
     positions = relationship(
         "Position", back_populates="stock", cascade="all, delete-orphan"
     )
+    group_memberships = relationship(
+        "StockGroupMember", back_populates="stock", cascade="all, delete-orphan"
+    )
+
+
+class StockGroup(Base):
+    """自选分组，例如白酒、房地产。一只股票可以同时出现在多个分组。"""
+
+    __tablename__ = "stock_groups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False, unique=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    members = relationship(
+        "StockGroupMember",
+        back_populates="group",
+        cascade="all, delete-orphan",
+        order_by="StockGroupMember.sort_order",
+    )
+
+
+class StockGroupMember(Base):
+    __tablename__ = "stock_group_members"
+    __table_args__ = (
+        UniqueConstraint("group_id", "stock_id", name="uq_group_stock"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(
+        Integer, ForeignKey("stock_groups.id", ondelete="CASCADE"), nullable=False
+    )
+    stock_id = Column(
+        Integer, ForeignKey("stocks.id", ondelete="CASCADE"), nullable=False
+    )
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, server_default=func.now())
+
+    group = relationship("StockGroup", back_populates="members")
+    stock = relationship("Stock", back_populates="group_memberships")
 
 
 class Position(Base):

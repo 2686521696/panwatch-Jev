@@ -12,6 +12,8 @@ from src.platform.persistence.database import get_db
 from src.platform.persistence.models import (
     Stock,
     StockAgent,
+    StockGroup,
+    StockGroupMember,
     AgentConfig,
     Position,
     PriceAlertRule,
@@ -251,6 +253,158 @@ def reorder_stocks(body: StockReorderRequest, db: Session = Depends(get_db)):
     return {"updated": updated}
 
 
+class StockGroupCreate(BaseModel):
+    name: str
+
+
+class StockGroupUpdate(BaseModel):
+    name: str | None = None
+    sort_order: int | None = None
+
+
+class StockGroupMemberCreate(BaseModel):
+    symbol: str
+    name: str
+    market: str = "CN"
+
+
+def _group_to_response(group: StockGroup) -> dict:
+    members = []
+    for member in sorted(group.members, key=lambda item: (item.sort_order or 0, item.id)):
+        stock = member.stock
+        if stock is None:
+            continue
+        members.append({
+            "id": member.id,
+            "stock_id": stock.id,
+            "symbol": stock.symbol,
+            "name": stock.name,
+            "market": stock.market,
+            "sort_order": member.sort_order or 0,
+        })
+    return {
+        "id": group.id,
+        "name": group.name,
+        "sort_order": group.sort_order or 0,
+        "members": members,
+    }
+
+
+def list_stock_groups(db: Session) -> list[dict]:
+    groups = db.query(StockGroup).order_by(StockGroup.sort_order.asc(), StockGroup.id.asc()).all()
+    return [_group_to_response(group) for group in groups]
+
+
+def create_stock_group(name: str, db: Session) -> dict:
+    cleaned = name.strip()
+    if not cleaned:
+        raise HTTPException(400, "分组名称不能为空")
+    existing = db.query(StockGroup).filter(StockGroup.name == cleaned).first()
+    if existing:
+        raise HTTPException(400, f"分组 {cleaned} 已存在")
+    max_order = db.query(func.max(StockGroup.sort_order)).scalar() or 0
+    group = StockGroup(name=cleaned, sort_order=int(max_order) + 1)
+    db.add(group)
+    db.commit()
+    db.refresh(group)
+    return _group_to_response(group)
+
+
+def add_stock_to_group(group_id: int, symbol: str, name: str, market: str, db: Session) -> dict:
+    group = db.query(StockGroup).filter(StockGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(404, "分组不存在")
+    symbol = symbol.strip()
+    name = name.strip()
+    market = (market or "CN").strip().upper()
+    if not symbol or not name:
+        raise HTTPException(400, "股票代码和名称不能为空")
+    stock = db.query(Stock).filter(Stock.symbol == symbol, Stock.market == market).first()
+    if not stock:
+        max_order = db.query(func.max(Stock.sort_order)).scalar() or 0
+        stock = Stock(symbol=symbol, name=name, market=market, sort_order=int(max_order) + 1)
+        db.add(stock)
+        db.flush()
+    member = db.query(StockGroupMember).filter(
+        StockGroupMember.group_id == group.id,
+        StockGroupMember.stock_id == stock.id,
+    ).first()
+    if not member:
+        max_member = db.query(func.max(StockGroupMember.sort_order)).filter(
+            StockGroupMember.group_id == group.id
+        ).scalar() or 0
+        member = StockGroupMember(
+            group_id=group.id,
+            stock_id=stock.id,
+            sort_order=int(max_member) + 1,
+        )
+        db.add(member)
+    db.commit()
+    db.refresh(group)
+    return _group_to_response(group)
+
+
+@router.get("/groups")
+def get_stock_groups(db: Session = Depends(get_db)):
+    return list_stock_groups(db)
+
+
+@router.post("/groups")
+def post_stock_group(body: StockGroupCreate, db: Session = Depends(get_db)):
+    return create_stock_group(body.name, db)
+
+
+@router.put("/groups/{group_id}")
+def put_stock_group(group_id: int, body: StockGroupUpdate, db: Session = Depends(get_db)):
+    group = db.query(StockGroup).filter(StockGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(404, "分组不存在")
+    if body.name is not None:
+        cleaned = body.name.strip()
+        if not cleaned:
+            raise HTTPException(400, "分组名称不能为空")
+        taken = db.query(StockGroup).filter(StockGroup.name == cleaned, StockGroup.id != group.id).first()
+        if taken:
+            raise HTTPException(400, f"分组 {cleaned} 已存在")
+        group.name = cleaned
+    if body.sort_order is not None:
+        group.sort_order = int(body.sort_order)
+    db.commit()
+    db.refresh(group)
+    return _group_to_response(group)
+
+
+@router.delete("/groups/{group_id}")
+def delete_stock_group(group_id: int, db: Session = Depends(get_db)):
+    group = db.query(StockGroup).filter(StockGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(404, "分组不存在")
+    db.query(StockGroupMember).filter(StockGroupMember.group_id == group.id).delete(
+        synchronize_session=False
+    )
+    db.delete(group)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/groups/{group_id}/stocks")
+def post_group_stock(group_id: int, body: StockGroupMemberCreate, db: Session = Depends(get_db)):
+    return add_stock_to_group(group_id, body.symbol, body.name, body.market, db)
+
+
+@router.delete("/groups/{group_id}/stocks/{stock_id}")
+def delete_group_stock(group_id: int, stock_id: int, db: Session = Depends(get_db)):
+    member = db.query(StockGroupMember).filter(
+        StockGroupMember.group_id == group_id,
+        StockGroupMember.stock_id == stock_id,
+    ).first()
+    if not member:
+        raise HTTPException(404, "分组里没有这只股票")
+    db.delete(member)
+    db.commit()
+    return {"ok": True}
+
+
 @router.put("/{stock_id}", response_model=StockResponse)
 def update_stock(stock_id: int, stock: StockUpdate, db: Session = Depends(get_db)):
     db_stock = db.query(Stock).filter(Stock.id == stock_id).first()
@@ -294,6 +448,9 @@ def delete_stock(stock_id: int, db: Session = Depends(get_db)):
         synchronize_session=False
     )
     db.query(StockAgent).filter(StockAgent.stock_id == stock_id).delete(
+        synchronize_session=False
+    )
+    db.query(StockGroupMember).filter(StockGroupMember.stock_id == stock_id).delete(
         synchronize_session=False
     )
 
